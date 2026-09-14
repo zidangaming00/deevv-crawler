@@ -2,7 +2,7 @@ import os
 import re
 import requests
 
-# Mengambil variabel sensitif dari GitHub Secrets
+# Secrets dari GitHub
 CF_ACCOUNT_ID = os.getenv('CF_ACCOUNT_ID')
 CF_DATABASE_ID = os.getenv('CF_D1_DATABASE_ID')
 CF_API_TOKEN = os.getenv('CF_API_TOKEN')
@@ -10,19 +10,18 @@ CF_API_TOKEN = os.getenv('CF_API_TOKEN')
 
 def push_to_cloudflare_d1(crawled_data):
   if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
-    print('[ERROR] Secret Cloudflare belum terkonfigurasi di GitHub!')
+    print('[ERROR] Secret Cloudflare belum lengkap!')
     return
 
   url = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/raw'
-
   headers = {
       'Authorization': f'Bearer {CF_API_TOKEN}',
       'Content-Type': 'application/json',
   }
 
-  statements = []
+  print(f'[INFO] Memulai penyetoran {len(crawled_data)} data ke D1...')
+
   for page in crawled_data:
-    # Escape single quote (') agar SQL Query tidak error saat baca teks
     title = page.get('title', '').replace("'", "''")
     snippet = page.get('snippet', '').replace("'", "''")
     page_url = page.get('url', '').replace("'", "''")
@@ -31,11 +30,10 @@ def push_to_cloudflare_d1(crawled_data):
     thumbnail = page.get('thumbnail', '').replace("'", "''")
     pagerank = page.get('pagerank', 0.0)
 
-    # Clean text untuk virtual table FTS5
     clean_title = re.sub(r'[^\w\s]', '', title)
     clean_snippet = re.sub(r'[^\w\s]', '', snippet)
 
-    sql = f"""
+    sql_doc = f"""
         INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, pagerank)
         VALUES ('{page_url}', '{domain}', '{title}', '{snippet}', '{favicon}', '{thumbnail}', {pagerank})
         ON CONFLICT(url) DO UPDATE SET 
@@ -44,30 +42,36 @@ def push_to_cloudflare_d1(crawled_data):
             favicon=excluded.favicon,
             thumbnail=excluded.thumbnail,
             pagerank=excluded.pagerank;
-        
+        """
+
+    res_doc = requests.post(url, headers=headers, json={'sql': sql_doc})
+
+    sql_fts = f"""
+        DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE url = '{page_url}');
         INSERT INTO documents_fts(rowid, title, snippet)
         SELECT id, '{clean_title}', '{clean_snippet}' FROM documents WHERE url = '{page_url}';
         """
-    statements.append(sql)
 
-  if not statements:
-    print('[INFO] Tidak ada data baru untuk di-push.')
-    return
+    res_fts = requests.post(url, headers=headers, json={'sql': sql_fts})
 
-  # Kirim gabungan query ke D1
-  full_sql = '\n'.join(statements)
-  payload = {'sql': full_sql}
-
-  response = requests.post(url, headers=headers, json=payload)
-
-  if response.status_code == 200 and response.json().get('success'):
-    print(
-        f'[SUCCESS] Berhasil menyetor {len(crawled_data)} dokumen ke Cloudflare'
-        ' D1!'
-    )
-  else:
-    print(f'[ERROR] Gagal menyetor ke D1: {response.text}')
+    if res_doc.status_code == 200 and res_fts.status_code == 200:
+      print(f'[SUCCESS] Ter-upload ke D1: {page_url}')
+    else:
+      print(f'[ERROR] Gagal upload {page_url}: {res_doc.text}')
 
 
-# Panggil fungsi ini di akhir eksekusi crawler kamu
-# push_to_cloudflare_d1(hasil_crawl_list)
+# --- WAJIB DIPANGGIL DI BAGIAN PALING BAWAH ---
+if __name__ == '__main__':
+  # Dummy data untuk pengujian pertama kali (opsional untuk tes)
+  data_tes = [{
+      'url': 'https://minecraft.net',
+      'domain': 'minecraft.net',
+      'title': 'Minecraft Official Site',
+      'snippet': 'Explore new gaming adventures in Minecraft',
+      'favicon': 'https://minecraft.net/favicon.ico',
+      'thumbnail': '',
+      'pagerank': 0.08,
+  }]
+
+  # PANGGIL FUNGSI PUSH DISINI
+  push_to_cloudflare_d1(data_tes)
