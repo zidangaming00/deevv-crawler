@@ -2,8 +2,8 @@ name: Deevv Automated Crawler
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Berjalan otomatis setiap hari jam 00:00 UTC
-  workflow_dispatch: # Bisa dijalankan manual dari tab Actions di GitHub
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 jobs:
   run-crawler:
@@ -25,7 +25,6 @@ jobs:
         run: |
           python crawler.py
 
-      # --- BLOK KODE YANG KAMU TANYAKAN DI TARUH DI SINI ---
       - name: Commit and Push Results
         run: |
           git config --global user.name "Deevv Bot"
