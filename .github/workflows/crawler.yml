@@ -1,9 +1,8 @@
 name: Auto Crawler & Update Index
 
 on:
-  workflow_dispatch: # Supaya bisa di-klik jalan manual di tab Actions
+  workflow_dispatch: # Bisa dijalankan manual lewat tab Actions
 
-# Memberikan izin agar GitHub Actions bisa melakukan commit & push ke repo
 permissions:
   contents: write
 
@@ -28,15 +27,17 @@ jobs:
 
       - name: Commit and Push to data/index
         run: |
-          # Mengatur identitas bot Git
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # Menambahkan file JSON baru/yang diupdate
-          git add data/index/search_index.json
-          
-          # Melakukan commit, tapi mengabaikan error kalau datanya ternyata tidak ada perubahan
-          git commit -m "Auto-update search index data [skip ci]" || echo "No changes to commit"
-          
-          # Mendorong perubahan kembali ke repository
-          git push
+          # Cek apakah file JSON-nya benar-benar ada/terbentuk
+          if [ -f "data/index/search_index.json" ]; then
+              git add data/index/search_index.json
+              git commit -m "Auto-update search index data [skip ci]" || echo "No changes to commit"
+              
+              # Tentukan branch secara dinamis agar push tidak gagal
+              git push origin HEAD
+          else
+              echo "Error: File search_index.json tidak ditemukan, crawler mungkin gagal!"
+              exit 1
+          fi
