@@ -1,119 +1,141 @@
-import json
-import os
-import re
-from urllib.parse import urljoin, urlparse
+import asyncio
+import aiohttp
 from bs4 import BeautifulSoup
-import requests
+from urllib.parse import urljoin, urlparse
+import json
+import re
+import os
 
-# Daftar situs awal yang mau dirayapi (Seed URLs) - fokus ke sumber lokal/berkualitas
-SEED_URLS = [
-    "https://id.wikipedia.org/wiki/Halaman_Utama",
-    "https://developer.mozilla.org/id/",
-]
-
-# Fungsi untuk membersihkan teks dan membuat token pencarian (Inverted Index sederhana)
-def tokenize_text(text):
-    words = re.findall(r"\b[a-z0-9à-öø-ÿ]+\b", text.lower())
-    tokens = {}
-    for pos, word in enumerate(words):
-        if len(word) > 2:
-            if word not in tokens:
-                tokens[word] = {"frequency": 0, "positions": []}
-            tokens[word]["frequency"] += 1
-            tokens[word]["positions"].append(pos)
-    return tokens
-
-def crawl_page(url):
-    headers = {
-        "User-Agent": "DeevvBot/1.0 (+https://github.com/ming00/deevv)"
-    }
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code != 200:
-            return None, []
+class MassiveWebCrawler:
+    def __init__(self, start_urls, max_pages=100, concurrency=10):
+        self.start_urls = start_urls
+        self.max_pages = max_pages
+        self.concurrency = concurrency
         
-        soup = BeautifulSoup(response.text, "html.parser")
+        self.visited = set()
+        self.queue = asyncio.Queue()
         
-        # 1. Ambil Judul
-        title_tag = soup.find("title")
-        title = title_tag.get_text().strip() if title_tag else "No Title"
+        self.pages_data = {}
+        self.graph = {}
+        self.inbound = {}
+
+    def is_valid_url(self, url):
+        parsed = urlparse(url)
+        return bool(parsed.netloc) and parsed.scheme in ['http', 'https']
+
+    def clean_text(self, text):
+        return re.sub(r'\s+', ' ', text).strip()
+
+    async def fetch(self, session, url):
+        try:
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    return await response.text()
+                return None
+        except Exception:
+            return None
+
+    async def process_page(self, url, html):
+        soup = BeautifulSoup(html, 'html.parser')
         
-        # 2. Ambil Snippet / Deskripsi Meta
-        meta_desc = soup.find("meta", attrs={"name": "description"})
-        if meta_desc and meta_desc.get("content"):
-            snippet = meta_desc.get("content").strip()
-        else:
-            p_tag = soup.find("p")
-            snippet = p_tag.get_text().strip()[:160] if p_tag else ""
+        title_tag = soup.find('title')
+        title = title_tag.get_text(strip=True) if title_tag else "Tanpa Judul"
+        
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        description = meta_desc['content'].strip() if meta_desc and meta_desc.get('content') else ""
+        
+        paragraphs = soup.find_all('p')
+        text_content = " ".join([p.get_text() for p in paragraphs])
+        snippet = self.clean_text(text_content)[:200] + "..." if text_content else ""
 
-        # 3. Ambil Favicon menggunakan Google S2 Favicon Service
-        parsed_uri = urlparse(url)
-        domain = parsed_uri.netloc
-        favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
+        outgoing_links = set()
+        for link in soup.find_all('a', href=True):
+            absolute_url = urljoin(url, link['href']).split('#')[0]
+            if self.is_valid_url(absolute_url):
+                outgoing_links.add(absolute_url)
+                if absolute_url not in self.visited and absolute_url not in [item[0] for item in self.queue._queue]:
+                    await self.queue.put(absolute_url)
 
-        # 4. Ambil teks bersih dari body untuk di-tokenisasi
-        for script in soup(["script", "style", "nav", "footer"]):
-            script.extract()
-        body_text = soup.get_text(separator=" ")
-        tokens = tokenize_text(body_text)
-
-        # 5. Kumpulkan Link Keluar
-        new_links = []
-        for a_tag in soup.find_all("a", href=True):
-            absolute_url = urljoin(url, a_tag["href"])
-            if absolute_url.startswith("http"):
-                new_links.append(absolute_url)
-
-        document_data = {
+        self.pages_data[url] = {
             "url": url,
-            "domain": domain,
-            "metadata": {
-                "title": title,
-                "snippet": snippet,
-                "favicon_url": favicon_url,
-            },
-            "search_index_tokens": tokens
+            "title": title,
+            "description": description,
+            "snippet": snippet,
+            "pagerank": 0.0
         }
+        self.graph[url] = list(outgoing_links)
 
-        return document_data, list(set(new_links))[:10]
+    async def worker(self, session):
+        while len(self.visited) < self.max_pages and not self.queue.empty():
+            url = await self.queue.get()
+            if url in self.visited:
+                self.queue.task_done()
+                continue
+                
+            self.visited.add(url)
+            print(f"[{len(self.visited)}/{self.max_pages}] Merayapi: {url}")
+            
+            html = await self.fetch(session, url)
+            if html:
+                await self.process_page(url, html)
+                
+            self.queue.task_done()
 
-    except Exception as e:
-        print(f"Gagal merayapi {url}: {e}")
-        return None, []
+    async def run_crawler(self):
+        for url in self.start_urls:
+            await self.queue.put(url)
+            
+        async with aiohttp.ClientSession(headers={'User-Agent': 'MassiveSpiderBot/1.0'}) as session:
+            tasks = [asyncio.create_task(self.worker(session)) for _ in range(self.concurrency)]
+            await self.queue.join()
+            for task in tasks:
+                task.cancel()
 
-def main():
-    visited = set()
-    queue = list(SEED_URLS)
-    database_results = []
+    def calculate_pagerank(self, damping_factor=0.85, iterations=20):
+        print("\nMenghitung PageRank...")
+        for node in self.pages_data.keys():
+            self.inbound[node] = []
+            
+        for source, targets in self.graph.items():
+            for target in targets:
+                if target in self.inbound:
+                    self.inbound[target].append(source)
+                    
+        N = len(self.pages_data)
+        if N == 0: return
+        
+        initial_pr = 1.0 / N
+        for url in self.pages_data:
+            self.pages_data[url]["pagerank"] = initial_pr
 
-    max_pages = 5
-    count = 0
+        for _ in range(iterations):
+            new_pr = {}
+            for url in self.pages_data:
+                rank_sum = sum((self.pages_data[in_node]["pagerank"] / len(self.graph.get(in_node, []))) 
+                               for in_node in self.inbound[url] if len(self.graph.get(in_node, [])) > 0)
+                new_pr[url] = ((1 - damping_factor) / N) + (damping_factor * rank_sum)
+                
+            for url in new_pr:
+                self.pages_data[url]["pagerank"] = new_pr[url]
 
-    while queue and count < max_pages:
-        current_url = queue.pop(0)
-        if current_url in visited:
-            continue
-
-        print(f"[{count+1}/{max_pages}] Merayapi: {current_url}")
-        visited.add(current_url)
-
-        doc_data, extracted_links = crawl_page(current_url)
-        if doc_data:
-            database_results.append(doc_data)
-            count += 1
-            for link in extracted_links:
-                if link not in visited:
-                    queue.append(link)
-
-    # PERUBAHAN: Simpan ke dalam folder terstruktur (misal: data/index/)
-    output_dir = "data/index"
-    os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, "deevv_index.json")
-    
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(database_results, f, ensure_ascii=False, indent=2)
-    
-    print(f"Berhasil! Data disimpan rapi di dalam folder {output_file}")
+    def save_results(self, filepath):
+        # Membuat folder target jika belum ada
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        sorted_results = sorted(self.pages_data.values(), key=lambda x: x['pagerank'], reverse=True)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(sorted_results, f, indent=4, ensure_ascii=False)
+        print(f"\nData disimpan di: {filepath}")
 
 if __name__ == "__main__":
-    main()
+    seed_urls = [
+        "https://quotes.toscrape.com/",
+        # Masukkan URL targetmu di sini
+    ]
+    
+    crawler = MassiveWebCrawler(seed_urls, max_pages=50, concurrency=10)
+    asyncio.run(crawler.run_crawler())
+    crawler.calculate_pagerank()
+    
+    # Path disesuaikan dengan permintaanmu
+    crawler.save_results("data/index/search_index.json")
