@@ -13,12 +13,9 @@ SEED_URLS = [
 
 # Fungsi untuk membersihkan teks dan membuat token pencarian (Inverted Index sederhana)
 def tokenize_text(text):
-    # Ubah ke lowercase, ambil kata alfanumerik saja
     words = re.findall(r"\b[a-z0-9à-öø-ÿ]+\b", text.lower())
-    # Buat kamus frekuensi kata & posisinya
     tokens = {}
     for pos, word in enumerate(words):
-        # Abaikan kata yang terlalu pendek (<= 2 huruf)
         if len(word) > 2:
             if word not in tokens:
                 tokens[word] = {"frequency": 0, "positions": []}
@@ -46,7 +43,6 @@ def crawl_page(url):
         if meta_desc and meta_desc.get("content"):
             snippet = meta_desc.get("content").strip()
         else:
-            # Fallback ambil teks paragraf pertama jika meta description tidak ada
             p_tag = soup.find("p")
             snippet = p_tag.get_text().strip()[:160] if p_tag else ""
 
@@ -61,15 +57,13 @@ def crawl_page(url):
         body_text = soup.get_text(separator=" ")
         tokens = tokenize_text(body_text)
 
-        # 5. Kumpulkan Link Keluar (untuk ditemukan crawler berikutnya)
+        # 5. Kumpulkan Link Keluar
         new_links = []
         for a_tag in soup.find_all("a", href=True):
             absolute_url = urljoin(url, a_tag["href"])
-            # Pastikan hanya mengambil link http/https dari domain yang sama atau publik
             if absolute_url.startswith("http"):
                 new_links.append(absolute_url)
 
-        # Struktur Data Dokumen Utuh (Format ala DDG/Custom JSON)
         document_data = {
             "url": url,
             "domain": domain,
@@ -81,7 +75,7 @@ def crawl_page(url):
             "search_index_tokens": tokens
         }
 
-        return document_data, list(set(new_links))[:10] # Ambil maksimal 10 link baru per halaman
+        return document_data, list(set(new_links))[:10]
 
     except Exception as e:
         print(f"Gagal merayapi {url}: {e}")
@@ -92,7 +86,6 @@ def main():
     queue = list(SEED_URLS)
     database_results = []
 
-    # Batasi misalnya hanya merayapi 5 halaman dulu untuk uji coba di GitHub Actions
     max_pages = 5
     count = 0
 
@@ -112,13 +105,15 @@ def main():
                 if link not in visited:
                     queue.append(link)
 
-    # Simpan hasil ke file JSON
-    os.makedirs("output", exist_ok=True)
-    output_file = "output/deevv_index.json"
+    # PERUBAHAN: Simpan ke dalam folder terstruktur (misal: data/index/)
+    output_dir = "data/index"
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, "deevv_index.json")
+    
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(database_results, f, ensure_ascii=False, indent=2)
     
-    print(f"Berhasil! Data disimpan ke {output_file}")
+    print(f"Berhasil! Data disimpan rapi di dalam folder {output_file}")
 
 if __name__ == "__main__":
     main()
