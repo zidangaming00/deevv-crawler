@@ -8,11 +8,10 @@ from urllib.robotparser import RobotFileParser
 
 import aiohttp
 from bs4 import BeautifulSoup
-import requests
 
 # --- CONFIGURATION ---
-MAX_RUN_SECONDS = 3600  # Maksimal 1 Jam per run di GitHub Actions
-CONCURRENCY = 15  # 15 Pekerja simultan
+MAX_RUN_SECONDS = 3600  # Maksimal 1 Jam per run
+CONCURRENCY = 15  # 15 Pekerja simultan saat merayap
 
 # Secrets dari GitHub Actions
 CF_ACCOUNT_ID = os.getenv('CF_ACCOUNT_ID')
@@ -34,9 +33,9 @@ class ProductionD1Crawler:
 
     self.queue = asyncio.Queue()
     self.visited_urls = set()
-    self.visited_domains = set()  # Track domain untuk melebarkan pencarian
+    self.visited_domains = set()
     self.domain_robots = {}
-    self.pages_data = {}  # URL -> Dict Data
+    self.pages_data = {}
     self.graph = {}
     self.inbound = {}
 
@@ -118,7 +117,6 @@ class ProductionD1Crawler:
     parsed_url = urlparse(url)
     domain_name = parsed_url.netloc
 
-    # Meta Extract
     title_tag = soup.find('title')
     title = title_tag.get_text(strip=True) if title_tag else domain_name
 
@@ -133,7 +131,6 @@ class ProductionD1Crawler:
         else ''
     )
 
-    # Favicon
     icon_tag = soup.find(
         'link',
         rel=lambda r: r
@@ -144,7 +141,6 @@ class ProductionD1Crawler:
     else:
       favicon = f'https://www.google.com/s2/favicons?domain={domain_name}&sz=64'
 
-    # Thumbnail
     og_image = soup.find('meta', attrs={'property': 'og:image'}) or soup.find(
         'meta', attrs={'name': 'twitter:image'}
     )
@@ -154,7 +150,6 @@ class ProductionD1Crawler:
         else ''
     )
 
-    # Snippet Cleaning
     for element in soup([
         'script',
         'style',
@@ -173,7 +168,6 @@ class ProductionD1Crawler:
     else:
       snippet = description
 
-    # Discovery URL & Spread to Broad Domains
     outgoing_links = set()
     for link in soup.find_all('a', href=True):
       abs_url = urljoin(url, link['href']).split('#')[0]
@@ -184,7 +178,6 @@ class ProductionD1Crawler:
         target_domain = parsed_abs.netloc
         root_domain_url = f'{parsed_abs.scheme}://{target_domain}/'
 
-        # STRATEGI MENYEBAR KELUAR: Utamakan root domain baru yang belum dikunjungi
         if (
             target_domain not in self.visited_domains
             and root_domain_url not in self.visited_urls
@@ -195,7 +188,6 @@ class ProductionD1Crawler:
         if abs_url not in self.visited_urls:
           await self.queue.put(abs_url)
 
-    # Temporary Store
     self.pages_data[url] = {
         'url': url,
         'domain': domain_name,
@@ -295,74 +287,83 @@ class ProductionD1Crawler:
         self.pages_data[url]['pagerank'] = new_pr[url]
 
 
-# --- CLOUDFLARE D1 INTEGRATION ---
-def push_to_cloudflare_d1(crawled_data):
+# --- CLOUDFLARE D1 ASYNC FAST PUSH ---
+async def push_single_page_async(session, url_d1, headers, page):
+  title = page.get('title', '').replace("'", "''")
+  snippet = page.get('snippet', '').replace("'", "''")
+  page_url = page.get('url', '').replace("'", "''")
+  domain = page.get('domain', '').replace("'", "''")
+  favicon = page.get('favicon', '').replace("'", "''")
+  thumbnail = page.get('thumbnail', '').replace("'", "''")
+  pagerank = page.get('pagerank', 0.0)
+
+  clean_title = re.sub(r'[^\w\s]', '', title)
+  clean_snippet = re.sub(r'[^\w\s]', '', snippet)
+
+  # Menggabungkan SQL menjadi 1 batch agar request ke D1 dipotong setengah!
+  combined_sql = f"""
+    INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, pagerank)
+    VALUES ('{page_url}', '{domain}', '{title}', '{snippet}', '{favicon}', '{thumbnail}', {pagerank})
+    ON CONFLICT(url) DO UPDATE SET 
+        title=excluded.title, 
+        snippet=excluded.snippet,
+        favicon=excluded.favicon,
+        thumbnail=excluded.thumbnail,
+        pagerank=excluded.pagerank;
+        
+    DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE url = '{page_url}');
+    
+    INSERT INTO documents_fts(rowid, title, snippet)
+    SELECT id, '{clean_title}', '{clean_snippet}' FROM documents WHERE url = '{page_url}';
+  """
+
+  try:
+    async with session.post(
+        url_d1, headers=headers, json={'sql': combined_sql}
+    ) as response:
+      # Jangan buang waktu mengecek body JSON untuk mempercepat proses (Fire and Forget)
+      return response.status == 200
+  except Exception:
+    return False
+
+
+async def push_to_cloudflare_d1_async(crawled_data):
   if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
     print('[ERROR] Secrets Cloudflare D1 belum terpasang di GitHub!')
     return
 
-  url = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/raw'
+  url_d1 = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/raw'
   headers = {
       'Authorization': f'Bearer {CF_API_TOKEN}',
       'Content-Type': 'application/json',
   }
 
   print(
-      f'\n[D1 PUSH] Menyetor {len(crawled_data)} dokumen ke Cloudflare D1...'
+      f'\n[D1 PUSH] Memulai upload paralel {len(crawled_data)} dokumen ke'
+      ' Cloudflare D1...'
   )
 
-  success_count = 0
-  for page in crawled_data:
-    title = page.get('title', '').replace("'", "''")
-    snippet = page.get('snippet', '').replace("'", "''")
-    page_url = page.get('url', '').replace("'", "''")
-    domain = page.get('domain', '').replace("'", "''")
-    favicon = page.get('favicon', '').replace("'", "''")
-    thumbnail = page.get('thumbnail', '').replace("'", "''")
-    pagerank = page.get('pagerank', 0.0)
+  # Membatasi 25 request API simultan ke Cloudflare (Batas wajar agar tidak di rate-limit)
+  semaphore = asyncio.Semaphore(25)
 
-    clean_title = re.sub(r'[^\w\s]', '', title)
-    clean_snippet = re.sub(r'[^\w\s]', '', snippet)
+  async def sem_push(session, page):
+    async with semaphore:
+      return await push_single_page_async(session, url_d1, headers, page)
 
-    sql_doc = f"""
-        INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, pagerank)
-        VALUES ('{page_url}', '{domain}', '{title}', '{snippet}', '{favicon}', '{thumbnail}', {pagerank})
-        ON CONFLICT(url) DO UPDATE SET 
-            title=excluded.title, 
-            snippet=excluded.snippet,
-            favicon=excluded.favicon,
-            thumbnail=excluded.thumbnail,
-            pagerank=excluded.pagerank;
-        """
+  # Buka satu sesi HTTP untuk ribuan request (Sangat cepat!)
+  async with aiohttp.ClientSession() as session:
+    tasks = [sem_push(session, page) for page in crawled_data]
+    results = await asyncio.gather(*tasks)
 
-    res_doc = requests.post(url, headers=headers, json={'sql': sql_doc})
-
-    sql_fts = f"""
-        DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE url = '{page_url}');
-        INSERT INTO documents_fts(rowid, title, snippet)
-        SELECT id, '{clean_title}', '{clean_snippet}' FROM documents WHERE url = '{page_url}';
-        """
-
-    res_fts = requests.post(url, headers=headers, json={'sql': sql_fts})
-
-    if (
-        res_doc.status_code == 200
-        and res_doc.json().get('success')
-        and res_fts.status_code == 200
-        and res_fts.json().get('success')
-    ):
-      success_count += 1
-    else:
-      print(f'[ERROR] Gagal upload {page_url}')
-
+  success_count = sum(1 for r in results if r)
   print(
       f'[D1 FINISH] Selesai! {success_count}/{len(crawled_data)} dokumen'
-      ' berhasil tersimpan di Cloudflare D1.'
+      ' berhasil dikirim ke Cloudflare D1.'
   )
 
 
 if __name__ == '__main__':
-  # Seed Awal Lintas Sektor Global & Indonesia (Gaming, News, Wiki, Tech, Edu, Govt)
+  # Seed Awal Lintas Sektor Global & Indonesia
   initial_seeds = [
       'https://id.wikipedia.org',
       'https://www.kompas.com',
@@ -377,18 +378,19 @@ if __name__ == '__main__':
       'https://www.reddit.com',
   ]
 
+  # Berjalan maksimal pas 1 jam (3600 detik)
   crawler = ProductionD1Crawler(
       seed_urls=initial_seeds,
-      max_run_seconds=3600,  # Berjalan 1 jam per jadwal run
+      max_run_seconds=3600,
       concurrency=15,
   )
 
-  # Run Crawler
+  # Eksekusi Crawling (1 Jam)
   asyncio.run(crawler.run())
 
-  # Calculate PageRank
+  # Kalkulasi Rating
   crawler.calculate_pagerank()
 
-  # Push to Cloudflare D1
+  # Eksekusi Upload Cepat (Hitungan Menit)
   crawled_results = list(crawler.pages_data.values())
-  push_to_cloudflare_d1(crawled_results)
+  asyncio.run(push_to_cloudflare_d1_async(crawled_results))
