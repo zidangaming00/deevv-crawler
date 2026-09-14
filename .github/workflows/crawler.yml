@@ -1,119 +1,35 @@
-import json
-import os
-import re
-from urllib.parse import urljoin, urlparse
-from bs4 import BeautifulSoup
-import requests
+name: Deevv Automated Crawler
 
-# Daftar situs awal yang mau dirayapi (Seed URLs) - fokus ke sumber lokal/berkualitas
-SEED_URLS = [
-    "https://id.wikipedia.org/wiki/Halaman_Utama",
-    "https://developer.mozilla.org/id/",
-]
+on:
+  schedule:
+    - cron: '0 0 * * *' # Berjalan otomatis setiap hari jam 00:00 UTC
+  workflow_dispatch: # Bisa dijalankan manual dari tab Actions di GitHub
 
-# Fungsi untuk membersihkan teks dan membuat token pencarian (Inverted Index sederhana)
-def tokenize_text(text):
-    words = re.findall(r"\b[a-z0-9à-öø-ÿ]+\b", text.lower())
-    tokens = {}
-    for pos, word in enumerate(words):
-        if len(word) > 2:
-            if word not in tokens:
-                tokens[word] = {"frequency": 0, "positions": []}
-            tokens[word]["frequency"] += 1
-            tokens[word]["positions"].append(pos)
-    return tokens
+jobs:
+  run-crawler:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-def crawl_page(url):
-    headers = {
-        "User-Agent": "DeevvBot/1.0 (+https://github.com/ming00/deevv)"
-    }
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code != 200:
-            return None, []
-        
-        soup = BeautifulSoup(response.text, "html.parser")
-        
-        # 1. Ambil Judul
-        title_tag = soup.find("title")
-        title = title_tag.get_text().strip() if title_tag else "No Title"
-        
-        # 2. Ambil Snippet / Deskripsi Meta
-        meta_desc = soup.find("meta", attrs={"name": "description"})
-        if meta_desc and meta_desc.get("content"):
-            snippet = meta_desc.get("content").strip()
-        else:
-            p_tag = soup.find("p")
-            snippet = p_tag.get_text().strip()[:160] if p_tag else ""
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-        # 3. Ambil Favicon menggunakan Google S2 Favicon Service
-        parsed_uri = urlparse(url)
-        domain = parsed_uri.netloc
-        favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
+      - name: Install Dependencies
+        run: |
+          pip install requests beautifulsoup4
 
-        # 4. Ambil teks bersih dari body untuk di-tokenisasi
-        for script in soup(["script", "style", "nav", "footer"]):
-            script.extract()
-        body_text = soup.get_text(separator=" ")
-        tokens = tokenize_text(body_text)
+      - name: Run Crawler Script
+        run: |
+          python crawler.py
 
-        # 5. Kumpulkan Link Keluar
-        new_links = []
-        for a_tag in soup.find_all("a", href=True):
-            absolute_url = urljoin(url, a_tag["href"])
-            if absolute_url.startswith("http"):
-                new_links.append(absolute_url)
-
-        document_data = {
-            "url": url,
-            "domain": domain,
-            "metadata": {
-                "title": title,
-                "snippet": snippet,
-                "favicon_url": favicon_url,
-            },
-            "search_index_tokens": tokens
-        }
-
-        return document_data, list(set(new_links))[:10]
-
-    except Exception as e:
-        print(f"Gagal merayapi {url}: {e}")
-        return None, []
-
-def main():
-    visited = set()
-    queue = list(SEED_URLS)
-    database_results = []
-
-    max_pages = 5
-    count = 0
-
-    while queue and count < max_pages:
-        current_url = queue.pop(0)
-        if current_url in visited:
-            continue
-
-        print(f"[{count+1}/{max_pages}] Merayapi: {current_url}")
-        visited.add(current_url)
-
-        doc_data, extracted_links = crawl_page(current_url)
-        if doc_data:
-            database_results.append(doc_data)
-            count += 1
-            for link in extracted_links:
-                if link not in visited:
-                    queue.append(link)
-
-    # PERUBAHAN: Simpan ke dalam folder terstruktur (misal: data/index/)
-    output_dir = "data/index"
-    os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, "deevv_index.json")
-    
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(database_results, f, ensure_ascii=False, indent=2)
-    
-    print(f"Berhasil! Data disimpan rapi di dalam folder {output_file}")
-
-if __name__ == "__main__":
-    main()
+      # --- BLOK KODE YANG KAMU TANYAKAN DI TARUH DI SINI ---
+      - name: Commit and Push Results
+        run: |
+          git config --global user.name "Deevv Bot"
+          git config --global user.email "bot@deevv.internal"
+          git add data/index/deevv_index.json
+          git commit -m "Auto-update search index inside data folder" || echo "No changes to commit"
+          git push
