@@ -2,8 +2,8 @@ name: Run Deevv Crawler
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Jalan otomatis setiap hari
-  workflow_dispatch: # Bikin tombol manual trigger
+    - cron: '0 0 * * *'  # Jalan otomatis setiap hari
+  workflow_dispatch:     # Tombol pemicu manual
 
 jobs:
   crawl:
@@ -19,7 +19,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install requests beautifulsoup4
+          pip install requests beautifulsoup4 aiohttp
 
       - name: Run Crawler Script
         env:
