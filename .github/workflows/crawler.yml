@@ -1,15 +1,18 @@
-name: Deevv Automated Crawler
+name: Auto Crawler & Update Index
 
 on:
-  schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # Supaya bisa di-klik jalan manual di tab Actions
+
+# Memberikan izin agar GitHub Actions bisa melakukan commit & push ke repo
+permissions:
+  contents: write
 
 jobs:
-  run-crawler:
+  run-and-commit:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -17,18 +20,23 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
-        run: |
-          pip install requests beautifulsoup4
+      - name: Install dependencies
+        run: pip install aiohttp beautifulsoup4
 
       - name: Run Crawler Script
-        run: |
-          python crawler.py
+        run: python crawler.py
 
-      - name: Commit and Push Results
+      - name: Commit and Push to data/index
         run: |
-          git config --global user.name "Deevv Bot"
-          git config --global user.email "bot@deevv.internal"
-          git add data/index/deevv_index.json
-          git commit -m "Auto-update search index inside data folder" || echo "No changes to commit"
+          # Mengatur identitas bot Git
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Menambahkan file JSON baru/yang diupdate
+          git add data/index/search_index.json
+          
+          # Melakukan commit, tapi mengabaikan error kalau datanya ternyata tidak ada perubahan
+          git commit -m "Auto-update search index data [skip ci]" || echo "No changes to commit"
+          
+          # Mendorong perubahan kembali ke repository
           git push
