@@ -1,387 +1,632 @@
 [
     {
-        "url": "https://www.zyte.com",
-        "title": "Web Data Collection: APIs and Managed Data Delivery | Zyte",
-        "description": "Home of the all-in-one, AI-powered web scraping platform, and a world-class data delivery team.  Your devs or ours?",
-        "snippet": "Zyte Developer community meetup #2 x Humanbound.ai - Ship agents that survive the real web From access to extraction to delivery, outcomes are our responsibility. Accurate, compliant, and reliable at ...",
-        "pagerank": 0.02653690009826757
+        "url": "https://www.python.org/",
+        "title": "Welcome to Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Notice: This page displays a fallback because interactive scripts did not run. Possible causes include disabled JavaScript or failure to load scripts or stylesheets. Get Started Whether you're new to programming or an experienced developer, it's easy...",
+        "pagerank": 0.0025960206492990903
     },
     {
-        "url": "https://www.goodreads.com/quotes",
-        "title": "Popular Quotes",
-        "description": "Popular quotes from Goodreads members. Oscar Wilde: ‘Be yourself; everyone else is already taken.’, Marilyn Monroe: ‘I'm selfish, impatient and a little ...",
+        "url": "https://www.python.org/events/python-user-group/2204/",
+        "title": "Python Leiden User Group  | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Python Leiden User Group Leiden, Netherlands 17 Sept. from 5:15pm UTC to 8pm UTC , 2026 Python Leiden User Group",
+        "pagerank": 0.0025801496107651515
+    },
+    {
+        "url": "https://www.python.org/events/python-user-group/2208/",
+        "title": "Django on the Med 2026 | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Django on the Med 2026 Pescara, Italy From 23 Sept. through 25 Sept. , 2026 Django on the Med 2026",
+        "pagerank": 0.0025097309463480173
+    },
+    {
+        "url": "https://github.com/features/discussions",
+        "title": "GitHub Discussions · Developer Collaboration & Communication Tool · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "GitHub Discussions The home for developer communities Ask questions, share ideas, and build connections with each other—all right next to your code. GitHub Discussions enables healthy and productive software collaboration. Try now Contact sales Highl...",
+        "pagerank": 0.002419044477544496
+    },
+    {
+        "url": "https://www.python.org/psf/donations/",
+        "title": "Support the PSF with a Donation or by becoming a Supporting Member! | Python Software Foundation",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Donate Become a Supporting Member What does the Python Software Foundation do? The Python Software Foundation : Awards grants and provides resources for furthering the development and adoption of Python. Organizes and hosts the annual PyCon US confer...",
+        "pagerank": 0.0024049461913408414
+    },
+    {
+        "url": "https://github.com/features/codespaces",
+        "title": "GitHub Codespaces · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "GitHub Codespaces GitHub Codespaces GitHub Codespaces gets you up and coding faster with fully configured, secure cloud development environments native to GitHub. Get started for free Contact Sales Code from any device Want to code on an iPad? Go for...",
+        "pagerank": 0.002187503723819567
+    },
+    {
+        "url": "https://www.python.org/events/python-events/2159/",
+        "title": "PyCon Cameroon 2026 | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "PyCon Cameroon 2026 Yaoundé, Cameroon From 17 Sept. through 19 Sept. , 2026 PyCon Cameroon 2026",
+        "pagerank": 0.002154185728948685
+    },
+    {
+        "url": "https://github.com/features/copilot",
+        "title": "GitHub Copilot · Your AI coding agent · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "GitHub Copilot Command your craft Your AI accelerator for every workflow, from the editor to the enterprise. Download for macOS (Silicon) See plans & pricing Already have Visual Studio Code? Open now Companies powered by GitHub Duolingo FedEx America...",
+        "pagerank": 0.002109072724558018
+    },
+    {
+        "url": "https://github.com/features/actions",
+        "title": "GitHub Actions · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "GitHub Actions GitHub Actions GitHub Actions makes it easy to automate all your software workflows, now with world-class CI/CD. Build, test, and deploy your code right from GitHub. Make code reviews, branch management, and issue triaging work the way...",
+        "pagerank": 0.0020972933776148236
+    },
+    {
+        "url": "https://www.python.org/events/python-user-group/2182/",
+        "title": "PythonCamp Rügen 2026 | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "PythonCamp Rügen 2026 Lietzow, Germany From 26 Sept. through 27 Sept. , 2026 PythonCamp Rügen 2026",
+        "pagerank": 0.002083076685468819
+    },
+    {
+        "url": "https://github.com/customer-stories",
+        "title": "Customer stories · GitHub",
+        "description": "With collaborative project management, flexible security options, and easy admin, thousands of organizations are using GitHub and GitHub Enterprise to build better software. Hear what a few of them have to say.",
+        "snippet": "Customer Stories Enterprise Team All stories Start a free trial Meet the companies who build with GitHub See all stories How GM accelerated software delivery and strengthened engineering culture with GitHub. Read the story How AstraZeneca accelerates...",
+        "pagerank": 0.002082203983128336
+    },
+    {
+        "url": "https://github.com/features/issues",
+        "title": "GitHub Issues · Project planning for developers · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "GitHub Issues GitHub Issues Create issues, break them into sub-issues, track progress, add custom fields, and have conversations. Visualize large projects as tables, boards, or roadmaps, and automate everything with code. Start using projects Contact...",
+        "pagerank": 0.0020489817415451053
+    },
+    {
+        "url": "https://scipy.org/",
+        "title": "SciPy",
+        "description": "Why SciPy? Fundamental algorithms. Broadly applicable. Foundational. Interoperable. Performant. Open source.",
+        "snippet": "SciPy Fundamental algorithms for scientific computing in Python Get started SciPy 1.18.1 released! 2026-08-21 Fundamental algorithms SciPy provides algorithms for optimization, integration, interpolation, eigenvalue problems, algebraic equations, dif...",
+        "pagerank": 0.0020245391183743543
+    },
+    {
+        "url": "https://github.com/mobile",
+        "title": "GitHub Mobile · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "GitHub Mobile Build from anywhere with GitHub Mobile Collaborate, monitor, and create on mobile with GitHub Copilot for a smarter workflow. Download for iOS Review pull requests with ease Whether you're reviewing a bug fix or merging code, we've got ...",
+        "pagerank": 0.002019784709311667
+    },
+    {
+        "url": "https://dearpygui.readthedocs.io/en/latest/",
+        "title": "Dear PyGui’s Documentation — Dear PyGui  documentation",
+        "description": "Automate building, versioning, and hosting of your technical documentation continuously on Read the Docs.",
+        "snippet": "» Dear PyGui’s Documentation View page source Dear PyGui’s Documentation ¶ About DPG ¶ Dear PyGui is an easy-to-use, dynamic, GPU-Accelerated, cross-platform graphical user interface toolkit(GUI) for Python. It is “built with” Dear ImGui . Features i...",
+        "pagerank": 0.001977903393425352
+    },
+    {
+        "url": "https://buildbot.net/",
+        "title": "Buildbot",
+        "description": "Buildbot - The Continuous Integration Framework",
+        "snippet": "Fork me on GitHub! Buildbot Basics Buildbot is an open-source framework for automating software build, test, and release processes. Learn more Automated Build, Test, and Release Buildbot can automate all aspects of the software development cycle: Con...",
+        "pagerank": 0.001977903393425352
+    },
+    {
+        "url": "https://www.python.org/psf/",
+        "title": "Python Software Foundation",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Notice: This page displays a fallback because interactive scripts did not run. Possible causes include disabled JavaScript or failure to load scripts or stylesheets. We support the Python Community through... Grants In 2024, the PSF awarded $655,000 ...",
+        "pagerank": 0.0019689931889351805
+    },
+    {
+        "url": "https://github.com/sponsors",
+        "title": "GitHub Sponsors · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "GitHub Sponsors Support the developers who power open source See your top dependencies Get sponsored $40M+ Given back to our maintainers 103 Regions supported globally 4.2K+ Organizations sponsoring For maintainers Launch a page in minutes and showca...",
+        "pagerank": 0.0019509305392755296
+    },
+    {
+        "url": "https://www.python.org/events/python-user-group/2207/",
+        "title": "Python Leiden User Group | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Python Leiden User Group Leiden, The Netherlands 17 Sept. from 5:15pm UTC to 8pm UTC , 2026 Python Leiden User Group",
+        "pagerank": 0.0019035466289265123
+    },
+    {
+        "url": "https://github.com/features/code-review",
+        "title": "Code review and pull requests | GitHub · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "CODE REVIEW AND PULL REQUESTS Keep code moving. Keep main green. Whether code is written by you, a teammate, or an AI agent, review it with context, run the checks that matter, and decide what earns its way into main . See the docs Use GitHub for you...",
+        "pagerank": 0.0018946978602832577
+    },
+    {
+        "url": "https://github.com/security/advanced-security/secret-protection",
+        "title": "GitHub Secret Protection · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "GitHub Secret Protection Keep your secrets secret GitHub Secret Protection continuously monitors your GitHub perimeter, helping prevent exposures, protect credentials, and ship securely. Request a demo See plans & pricing What is GitHub Secret Protec...",
+        "pagerank": 0.0018946978602832577
+    },
+    {
+        "url": "https://pyfound.blogspot.com/2026/09/inaugural-python-packaging-council.html",
+        "title": "Python Software Foundation News: Inaugural Python Packaging Council Election: Voting is now open!",
+        "description": "",
+        "snippet": "Tuesday, September 01, 2026 Inaugural Python Packaging Council Election: Voting is now open! It’s time to cast your vote! Voting for the inaugural 2026 Python Packaging Council (PPC) Election is open now through September 15 at 2:00 pm UTC. Find Your...",
+        "pagerank": 0.0018896291059229322
+    },
+    {
+        "url": "https://pyfound.blogspot.com/2026/08/kojo-idrissa-2026-psf-board-election.html",
+        "title": "Python Software Foundation News: Kojo Idrissa: 2026 PSF Board Election Candidate Interview",
+        "description": "",
+        "snippet": "Monday, August 31, 2026 Kojo Idrissa: 2026 PSF Board Election Candidate Interview Who are you? I'm a software engineer at REVSYS. Before that I was an accountant. I was also a university instructor in the US and China. I taught English, Western Cultu...",
+        "pagerank": 0.00188936348426183
+    },
+    {
+        "url": "https://pyfound.blogspot.com/2026/09/the-2026-psf-board-election-is-open.html",
+        "title": "Python Software Foundation News: The 2026 PSF Board Election is Open!",
+        "description": "",
+        "snippet": "Tuesday, September 01, 2026 The 2026 PSF Board Election is Open! It’s time to cast your vote! Voting for the 2026 PSF Board Election is open starting today Tuesday, September 1st, 2:00 pm UTC, through Tuesday, September 15th, 2:00 pm UTC. How to Vote...",
+        "pagerank": 0.0018838522751257287
+    },
+    {
+        "url": "https://pyfound.blogspot.com/2026/08/ramya-ravi-2026-psf-board-election.html",
+        "title": "Python Software Foundation News: Ramya Ravi: 2026 PSF Board Election Candidate Interview",
+        "description": "",
+        "snippet": "Tuesday, August 25, 2026 Ramya Ravi: 2026 PSF Board Election Candidate Interview Who are you? I'm Ramya Ravi, a Developer Advocate for AI and Open Source at NetApp Instaclustr, based in Connecticut. My day to day is teaching developers how to actuall...",
+        "pagerank": 0.0018832330081548282
+    },
+    {
+        "url": "https://saltproject.io/",
+        "title": "Salt Project",
+        "description": "",
+        "snippet": "Welcome to the Salt Project Salt is an open-source automation framework for remote execution, configuration management, and infrastructure orchestration — used by teams to manage thousands of systems from a single control plane. Install Salt Step-by-...",
+        "pagerank": 0.001870202055538641
+    },
+    {
+        "url": "https://www.python.org/success-stories/",
+        "title": "Our Success Stories | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Notice: This page displays a fallback because interactive scripts did not run. Possible causes include disabled JavaScript or failure to load scripts or stylesheets. Newest success stories Python on Arm: 2025 Update Want to know how Python is perform...",
+        "pagerank": 0.0018542127189840737
+    },
+    {
+        "url": "https://www.roundup-tracker.org/",
+        "title": "Roundup Issue Tracker - Roundup 2.6.0 documentation",
+        "description": "A simple-to-use and -install issue-tracking system with command-line, web, REST, XML-RPC and e-mail interfaces. Adaptable to many use cases. Allows you to customize the look and feel and implement different workflows.",
+        "snippet": "Roundup Issue Tracker Download: Build Status: Roundup is an issue-tracking system that boasts a user-friendly interface and easy installation process. It offers a range of interfaces, including command-line, web, REST, XML-RPC, and e-mail, making it ...",
+        "pagerank": 0.0018500541246488078
+    },
+    {
+        "url": "https://docs.python.org",
+        "title": "3.14.7 Documentation",
+        "description": "The official Python documentation.",
+        "snippet": "Navigation index modules | Python » 3.14.7 Documentation » | Theme Auto Light Dark | Python 3.14.7 documentation Welcome! This is the official documentation for Python 3.14.7. Documentation sections: What's new in Python 3.14? Or all \"What's new\" doc...",
+        "pagerank": 0.0018494841477097556
+    },
+    {
+        "url": "https://github.com/customer-stories/duolingo",
+        "title": "Duolingo · GitHub",
+        "description": "Duolingo empowers its engineers to be force multipliers for expertise with GitHub Copilot.",
+        "snippet": "Customer Stories Enterprise Team All stories Start a free trial GitHub Enterprise Duolingo empowers its engineers to be force multipliers for expertise with GitHub Copilot. 25% increase in developer speed with GitHub Copilot 1m set-up time for larges...",
+        "pagerank": 0.0018324840277765123
+    },
+    {
+        "url": "https://github.com/customer-stories/mercado-libre",
+        "title": "Mercado Libre · GitHub",
+        "description": "Mercado Libre frees developers' minds to focus on their mission with GitHub.",
+        "snippet": "Customer Stories Enterprise Team All stories Start a free trial GitHub Enterprise Mercado Libre frees developers' minds to focus on their mission with GitHub. ~50% reduction in time spent writing code with GitHub Copilot 9,000+ developers using Copil...",
+        "pagerank": 0.0018309159521153065
+    },
+    {
+        "url": "https://huggingface.co/docs/transformers/",
+        "title": "Transformers · Hugging Face",
+        "description": "We’re on a journey to advance and democratize artificial intelligence through open source and open science.",
+        "snippet": "Transformers documentation Transformers Transformers 🏡 View all docs AWS Trainium & Inferentia Accelerate Argilla AutoTrain Bitsandbytes CLI Chat UI Dataset viewer Datasets Deploying on AWS Diffusers Distilabel Evaluate Google Cloud Google TPUs Gradi...",
+        "pagerank": 0.0018291888525663025
+    },
+    {
+        "url": "https://github.com/solutions",
+        "title": "GitHub · Scalable AI-Powered Enterprise Platform Solutions · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "AI-powered platform solutions to solve your company’s challenges GitHub empowers your team to deliver software faster and more efficiently, while maintaining robust security and compliance. Start a free trial Contact sales Enterprises Build, scale, a...",
+        "pagerank": 0.001824893202272822
+    },
+    {
+        "url": "https://github.com/customer-stories/figma",
+        "title": "Figma · GitHub",
+        "description": "Figma amplifies collaboration through GitHub integration.",
+        "snippet": "Customer Stories Enterprise Team All stories Start a free trial GitHub Enterprise Figma amplifies collaboration through GitHub integration. Customer Since 2016 Location San Francisco, CA Number of Seats 560 Problem Figma faced challenges in maintaini...",
+        "pagerank": 0.001819572813928003
+    },
+    {
+        "url": "http://docs.python.org",
+        "title": "3.14.7 Documentation",
+        "description": "The official Python documentation.",
+        "snippet": "Navigation index modules | Python » 3.14.7 Documentation » | Theme Auto Light Dark | Python 3.14.7 documentation Welcome! This is the official documentation for Python 3.14.7. Documentation sections: What's new in Python 3.14? Or all \"What's new\" doc...",
+        "pagerank": 0.001818365096173944
+    },
+    {
+        "url": "https://www.python.org/psf/membership/",
+        "title": "Become a Member of the PSF | Python Software Foundation",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "By becoming a member, you tell us and the world that you are a part of the PSF and support our work, and as one of the classes of voting members, you add your voice to the future direction of the Foundation. We're so happy to have you! Voting Members...",
+        "pagerank": 0.0018117467071936638
+    },
+    {
+        "url": "http://docs.python.org/3/faq/",
+        "title": "Python Frequently Asked Questions — Python 3.14.7 documentation",
+        "description": "General Python FAQ, Programming FAQ, Design and History FAQ, Library and Extension FAQ, Extending/Embedding FAQ, Python on Windows FAQ, Graphic User Interface FAQ, “Why is Python Installed on my Co...",
+        "snippet": "Navigation index modules | next | previous | Python » 3.14.7 Documentation » Python Frequently Asked Questions | Theme Auto Light Dark | Python Frequently Asked Questions ¶ General Python FAQ Programming FAQ Design and History FAQ Library and Extensi...",
+        "pagerank": 0.001810470149643437
+    },
+    {
+        "url": "http://pypi.python.org/pypi?%3Aaction=index",
+        "title": "PyPI · The Python Package Index",
+        "description": "The Python Package Index (PyPI) is a repository of software for the Python programming language.",
+        "snippet": "Find, install and publish Python packages with the Python Package Index Search PyPI Search Or browse projects Publishing as a team? Use an organization account 893,160 projects 9,606,480 releases 21,300,008 files 1,113,161 users The Python Package In...",
+        "pagerank": 0.001807312136864457
+    },
+    {
+        "url": "https://www.wxpython.org/",
+        "title": "Welcome to wxPython! | wxPython",
+        "description": "All about wxPython, the cross-platform GUI toolkit for the Python language",
+        "snippet": "This website is all about wxPython, the cross-platform GUI toolkit for the Python language. With wxPython software developers can create truly native user interfaces for their Python applications, that run with little or no modifications on Windows, ...",
+        "pagerank": 0.0018015337295253433
+    },
+    {
+        "url": "https://github.com/security/advanced-security",
+        "title": "GitHub Advanced Security · Built-in protection for every repository · GitHub",
+        "description": "GitHub is where people build software. More than 150 million people use GitHub to discover, fork, and contribute to over 420 million projects.",
+        "snippet": "GitHub Advanced Security Security that moves at the speed of development Request a demo See plans & pricing Ready to use it in your repositories? Get started now Secret Protection Stop leaks before they start Explore Secret Protection Explore Secret ...",
+        "pagerank": 0.0018001768157860569
+    },
+    {
+        "url": "https://github.com/customer-stories/mercedes-benz",
+        "title": "Mercedes-Benz · GitHub",
+        "description": "Automotive excellence at Mercedes-Benz and seamless developer experience on GitHub go hand in hand.",
+        "snippet": "Customer Stories Enterprise Team All stories Start a free trial GitHub Enterprise Automotive excellence at Mercedes-Benz and seamless developer experience on GitHub go hand in hand. 90% Source code on GitHub 2M lines of code accepted with GitHub Copi...",
+        "pagerank": 0.0018001768157860569
+    },
+    {
+        "url": "https://www.djangoproject.com/",
+        "title": "The web framework for perfectionists with deadlines | Django",
+        "description": "",
+        "snippet": "Meet Django Django is a high-level Python web framework that encourages rapid development and clean, pragmatic design. Built by experienced developers, it takes care of much of the hassle of web development, so you can focus on writing your app witho...",
+        "pagerank": 0.0017988917287142727
+    },
+    {
+        "url": "https://www.tensorflow.org/",
+        "title": "TensorFlow",
+        "description": "An end-to-end open source machine learning platform for everyone. Discover TensorFlow's flexible ecosystem of tools, libraries and community resources.",
+        "snippet": "TensorFlow Stay organized with collections Save and categorize content based on your preferences. An end-to-end platform for machine learning Install TensorFlow Get started with TensorFlow TensorFlow makes it easy to create ML models that can run in ...",
+        "pagerank": 0.0017964598273712792
+    },
+    {
+        "url": "http://docs.python.org/3/reference/",
+        "title": "The Python Language Reference — Python 3.14.7 documentation",
+        "description": "This reference manual describes the syntax and core semantics of the language. It is terse, but attempts to be exact and complete. Elsewhere, the built-in object types and functions are described i...",
+        "snippet": "Navigation index modules | next | previous | Python » 3.14.7 Documentation » The Python Language Reference | Theme Auto Light Dark | The Python Language Reference ¶ This reference manual describes the syntax and core semantics of the language. It is ...",
+        "pagerank": 0.0017930758376938512
+    },
+    {
+        "url": "https://blog.python.org",
+        "title": "Python Insider",
+        "description": "The official blog of the Python core development team.",
+        "snippet": "News & updates from the Python core team 329 posts / 27 authors / since 2011 RSS Latest Python 3.15.0 candidate 2 is here! Hugo van Kemenade · September 1, 2026 Last chance to test before the big day! releases Recent All posts RISC-V is now officiall...",
+        "pagerank": 0.0017879741550274027
+    },
+    {
+        "url": "https://blog.python.org/2026/09/python-3150-rc2/",
+        "title": "Python 3.15.0 candidate 2 is here! | Python Insider",
+        "description": "Last chance to test before the big day!",
+        "snippet": "It’s the final 3.15 release candidate! python.org/downloads/release/python-3150rc2 This is a candidate preview of Python 3.15 This release, 3.15.0rc2 , is the final planned release candidate, containing around 144 bugfixes, build improvements and doc...",
+        "pagerank": 0.0017879741550274027
+    },
+    {
+        "url": "https://www.python.org/events/calendars/",
+        "title": "Python Calendars | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Choose a calendar to view events. Python Events Calendar Python User Group Calendar",
+        "pagerank": 0.0017879741550274027
+    },
+    {
+        "url": "https://langchain.com/",
+        "title": "LangChain: the open agent platform to own your intelligence",
+        "description": "LangChain enables every company to own their intelligence. Control, govern, and compound intelligence with an open agent engineering platform.",
+        "snippet": "Meet LangSmith Engine Put insights to work Smarter after every launch We catch your drift Start building Get a demo Video ↗ Case study ↗ Video ↗ Video ↗ Video ↗ Video ↗ Case study ↗ Video ↗ Video ↗ Case study ↗ Video ↗ Build Test Deploy Monitor Itera...",
+        "pagerank": 0.001785147387416231
+    },
+    {
+        "url": "http://docs.python.org/3/tutorial/",
+        "title": "The Python Tutorial — Python 3.14.7 documentation",
+        "description": "Python is an easy to learn, powerful programming language. It has efficient high-level data structures and a simple but effective approach to object-oriented programming. Python’s elegant syntax an...",
+        "snippet": "Navigation index modules | next | previous | Python » 3.14.7 Documentation » The Python Tutorial | Theme Auto Light Dark | The Python Tutorial ¶ Tip This tutorial is designed for programmers that are new to the Python language, not beginners who are ...",
+        "pagerank": 0.0017826095589532044
+    },
+    {
+        "url": "https://bottlepy.org",
+        "title": "Bottle: Python Web Framework — Bottle 0.14-dev documentation",
+        "description": "Bottle is a fast, simple and lightweight WSGI micro web-framework for Python.",
+        "snippet": "Bottle: Python Web Framework ¶ Bottle is a fast, simple and lightweight WSGI micro web-framework for Python . It is distributed as a single file module and has no dependencies other than the Python Standard Library . Routing: Requests to function-cal...",
+        "pagerank": 0.0017822865742953718
+    },
+    {
+        "url": "https://www.python.org/success-stories/lincoln-loop-building-a-sustainable-business-inspired-by-pythons-ethos/",
+        "title": "Lincoln Loop: Building a sustainable business inspired by Python’s ethos | Our Success Stories | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Lincoln Loop: Building a sustainable business inspired by Python’s ethos Written by Peter Baumgartner , Lincoln Loop When our agency began in 2007, using Python on the web was still a rarity, but some new projects in the space were starting to pop up...",
+        "pagerank": 0.0017815094324695557
+    },
+    {
+        "url": "https://wiki.qt.io/Qt_for_Python",
+        "title": "Qt for Python - Qt Wiki",
+        "description": "",
+        "snippet": "From Qt Wiki En Ar Bg De El Es Fa Fi Fr Hi Hu It Ja Kn Ko Ms Nl Pl Pt Ru Sq Th Tr Uk Zh Qt for Python Documentation Check on PyPI Qt for Python official logo. The Qt for Python project aims to provide a complete port of the PySide module to Qt. The d...",
+        "pagerank": 0.001773624185112891
+    },
+    {
+        "url": "https://www.python.org/about/",
+        "title": "About Python™ | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Notice: This page displays a fallback because interactive scripts did not run. Possible causes include disabled JavaScript or failure to load scripts or stylesheets. Getting Started Python can be easy to pick up whether you're a first time programmer...",
+        "pagerank": 0.0017733439443323046
+    },
+    {
+        "url": "https://pygobject.gnome.org/",
+        "title": "Overview — PyGObject",
+        "description": "",
+        "snippet": "PyGObject is a Python package which provides bindings for GObject based libraries such as GTK , GStreamer , WebKitGTK , GLib , GIO and many more. It supports Linux, Windows, and macOS and works with Python 3.9+ and PyPy3 . PyGObject, including this d...",
+        "pagerank": 0.0017640351979780105
+    },
+    {
+        "url": "https://fastapi.tiangolo.com/",
+        "title": "FastAPI - FastAPI",
+        "description": "FastAPI framework, high performance, easy to learn, fast to code, ready for production",
+        "snippet": "FastAPI Conf '26 October 28, 2026 Amsterdam, NL All about FastAPI, right from the source. Learn more → FastAPI Conf '26 October 28, 2026 Amsterdam, NL All about FastAPI, right from the source. Learn more → FastAPI ¶ FastAPI framework, high performanc...",
+        "pagerank": 0.0017627010075448731
+    },
+    {
+        "url": "https://jobs.python.org",
+        "title": "Python Job Board | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Notice: This page displays a fallback because interactive scripts did not run. Possible causes include disabled JavaScript or failure to load scripts or stylesheets. New Agentic Python Engineer Evaboot Remote, Remote/Worldwide, Remote/Worldwide, Remo...",
+        "pagerank": 0.0017584893536969092
+    },
+    {
+        "url": "https://flask.palletsprojects.com/",
+        "title": "Welcome to Flask — Flask Documentation (3.1.x)",
+        "description": "",
+        "snippet": "Navigation index modules | next | Flask Documentation (3.1.x) » Welcome to Flask Welcome to Flask ¶ Welcome to Flask’s documentation. Flask is a lightweight WSGI web application framework. It is designed to make getting started quick and easy, with t...",
+        "pagerank": 0.0017573843666704861
+    },
+    {
+        "url": "https://www.python.org",
+        "title": "Welcome to Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Notice: This page displays a fallback because interactive scripts did not run. Possible causes include disabled JavaScript or failure to load scripts or stylesheets. Get Started Whether you're new to programming or an experienced developer, it's easy...",
+        "pagerank": 0.0017513471743581578
+    },
+    {
+        "url": "http://code.activestate.com/recipes/langs/python/",
+        "title": "Popular Python recipes  « ActiveState Code",
+        "description": "",
+        "snippet": "Skip to Search Skip to Navigation Skip to Content Community | Code | Docs | Downloads ▼ Perl Python Tcl Komodo IDE | more ▼ Lists Support PPM Index PyPM Index Welcome, guest | Sign In | My Account | Store | Cart ActiveState Code » Recipes Languages T...",
+        "pagerank": 0.0017493711515821555
+    },
+    {
+        "url": "http://wiki.python.org/moin/PythonEditors",
+        "title": "PythonEditors",
+        "description": "",
+        "snippet": "This wiki is in the process of being archived due to lack of usage and the resources necessary to serve it — predominately to bots, crawlers, and LLM companies. Edits are discouraged. Pages are preserved as they were at the time of archival. For curr...",
+        "pagerank": 0.001748687111891823
+    },
+    {
+        "url": "https://www.tornadoweb.org/",
+        "title": "Tornado Web Server — Tornado 6.5.8 documentation",
+        "description": "",
+        "snippet": "Tornado Web Server View page source ¶ Tornado is a Python web framework and asynchronous networking library, originally developed at FriendFeed . By using non-blocking network I/O, Tornado can scale to tens of thousands of open connections, making it...",
+        "pagerank": 0.001748658525723761
+    },
+    {
+        "url": "http://docs.python.org/3/library/",
+        "title": "The Python standard library — Python 3.14.7 documentation",
+        "description": "This library reference manual describes the standard library distributed with Python. It also describes some of the optional components that are commonly included in Python distributions. Elsewhere...",
+        "snippet": "Navigation index modules | next | previous | Python » 3.14.7 Documentation » The Python standard library | Theme Auto Light Dark | The Python standard library ¶ This library reference manual describes the standard library distributed with Python. It ...",
+        "pagerank": 0.0017458199772342068
+    },
+    {
+        "url": "https://www.python.org/doc/nonenglish/",
+        "title": "Languages",
+        "description": "",
+        "snippet": "This wiki is in the process of being archived due to lack of usage and the resources necessary to serve it — predominately to bots, crawlers, and LLM companies. Edits are discouraged. Pages are preserved as they were at the time of archival. For curr...",
+        "pagerank": 0.0017405201665890314
+    },
+    {
+        "url": "http://wiki.python.org/moin/BeginnersGuide/NonProgrammers",
+        "title": "BeginnersGuide/NonProgrammers",
+        "description": "",
+        "snippet": "This wiki is in the process of being archived due to lack of usage and the resources necessary to serve it — predominately to bots, crawlers, and LLM companies. Edits are discouraged. Pages are preserved as they were at the time of archival. For curr...",
+        "pagerank": 0.0017405201665890314
+    },
+    {
+        "url": "http://wiki.python.org/moin/BeginnersGuide/Programmers",
+        "title": "BeginnersGuide/Programmers",
+        "description": "",
+        "snippet": "This wiki is in the process of being archived due to lack of usage and the resources necessary to serve it — predominately to bots, crawlers, and LLM companies. Edits are discouraged. Pages are preserved as they were at the time of archival. For curr...",
+        "pagerank": 0.0017405201665890314
+    },
+    {
+        "url": "http://wiki.python.org/moin/BeginnersGuide/Download",
+        "title": "BeginnersGuide/Download",
+        "description": "",
+        "snippet": "This wiki is in the process of being archived due to lack of usage and the resources necessary to serve it — predominately to bots, crawlers, and LLM companies. Edits are discouraged. Pages are preserved as they were at the time of archival. For curr...",
+        "pagerank": 0.0017405201665890314
+    },
+    {
+        "url": "http://wiki.python.org/moin/BeginnersGuide/Examples",
+        "title": "BeginnersGuide/Examples",
+        "description": "",
+        "snippet": "This wiki is in the process of being archived due to lack of usage and the resources necessary to serve it — predominately to bots, crawlers, and LLM companies. Edits are discouraged. Pages are preserved as they were at the time of archival. For curr...",
+        "pagerank": 0.0017405201665890314
+    },
+    {
+        "url": "http://wiki.python.org/moin/IntegratedDevelopmentEnvironments",
+        "title": "IntegratedDevelopmentEnvironments",
+        "description": "",
+        "snippet": "This wiki is in the process of being archived due to lack of usage and the resources necessary to serve it — predominately to bots, crawlers, and LLM companies. Edits are discouraged. Pages are preserved as they were at the time of archival. For curr...",
+        "pagerank": 0.0017405201665890314
+    },
+    {
+        "url": "http://wiki.python.org/moin/IntroductoryBooks",
+        "title": "IntroductoryBooks",
+        "description": "",
+        "snippet": "This wiki is in the process of being archived due to lack of usage and the resources necessary to serve it — predominately to bots, crawlers, and LLM companies. Edits are discouraged. Pages are preserved as they were at the time of archival. For curr...",
+        "pagerank": 0.0017405201665890314
+    },
+    {
+        "url": "https://www.python.org/dev/",
+        "title": "Python Developer's Guide | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Python's Developer Guide can be found at https://devguide.python.org . The pieces of documentation hosted here are: PEPs (Python Enhancement Proposals) Buildbots Python.org maintenance and administration",
+        "pagerank": 0.0017405201665890314
+    },
+    {
+        "url": "https://www.python.org/search",
+        "title": "Welcome to Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Notice: This page displays a fallback because interactive scripts did not run. Possible causes include disabled JavaScript or failure to load scripts or stylesheets. Search Python.org",
+        "pagerank": 0.0017405201665890314
+    },
+    {
+        "url": "http://www.google.com",
+        "title": "Google",
+        "description": "",
+        "snippet": "About Store What's on your mind? Add images Add files 🍌 Create images Canvas AI Mode 🍌 Create Remove Create Images Canvas Remove Canvas See more Delete Report inappropriate predictions Advertising Business How Search works Build, create, and do more ...",
+        "pagerank": 0.0017405201665890314
+    },
+    {
+        "url": "https://www.python.org/about/gettingstarted/",
+        "title": "Python For Beginners | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Welcome! Are you completely new to programming ? If not then we presume you will be looking for information about why and how to get started with Python. Fortunately an experienced programmer in any programming language (whatever it may be) can pick ...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://www.python.org/downloads/release/python-3147/",
+        "title": "Python Release Python 3.14.7 | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Release date: Aug. 5, 2026 This is the seventh maintenance release of Python 3.14 Python 3.14.7 is the seventh maintenance release of 3.14, containing around 499 bugfixes, build improvements and documentation changes from 86 contributors since 3.14.6...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://www.python.org/about/apps",
+        "title": "Applications for Python | Python.org",
+        "description": "The official home of the Python Programming Language",
+        "snippet": "Python is used in many application domains. Here's a sampling. The Python Package Index lists thousands of third party modules for Python. Web and Internet Development Python offers many choices for web development : Frameworks such as Django and Pyr...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://litestar.dev/",
+        "title": "Litestar: The Modern Python ASGI Framework",
+        "description": "Build blazing fast APIs with automatic documentation, dependency injection, and type safety. Litestar makes complex web development simple and intuitive.",
+        "snippet": "New website & v3 The Modern Python ASGI Framework Built to scale Fast APIs with automatic OpenAPI documentation, dependency injection, type safety, and a lot of batteries included. Litestar makes designing complex web apps simpler Get started View on...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://trypyramid.com/",
+        "title": "Welcome to Pyramid, a Python Web Framework",
+        "description": "Pyramid is a lightweight Python web framework aimed at taking small web apps into big web apps. This site provides an easy entry point into Pyramid.",
+        "snippet": "Pyramid The Start Small , Finish Big Stay Finished Framework Projects with ambition start small but finish big and must stay finished . You need a Python web framework that supports your decisions , by artisans for artisans . Quick Start from wsgiref...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://kivy.org/",
+        "title": "Kivy: Cross-platform Python Framework for GUI apps Development",
+        "description": "Open source Python framework for rapid development of applications that make use of innovative user interfaces, such as multi-touch apps.",
+        "snippet": "Kivy: The Open Source Python App Development Framework. Build and distribute beautiful Python cross-platform GUI apps with ease. Kivy runs on Android, iOS, Linux, macOS and Windows. MIT License 17.0K Stars Get started! Kivy has been built to be easy ...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://scikit-learn.org/",
+        "title": "scikit-learn: machine learning in Python — scikit-learn 0.16.1 documentation",
+        "description": "",
         "snippet": "",
-        "pagerank": 0.02631681671802621
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://riverbankcomputing.com/software/pyqt/intro",
+        "title": "Riverbank Computing | Introduction",
+        "description": "",
+        "snippet": "What is PyQt? PyQt is a set of Python bindings for The Qt Company's Qt application framework. The bindings are implemented as a set of Python modules and contain over 1,000 classes. PyQt6 supports Qt6 and runs on Windows (Intel and ARM), macOS (Intel...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://ipython.org/",
+        "title": "Home | IPython",
+        "description": "IPython - Productive Interactive Computing",
+        "snippet": "Productive Interactive Computing IPython provides a rich architecture for interactive computing with a powerful shell, Jupyter kernel support, and flexible tools for parallel and distributed computing. Install IPython Get Started $ ipython Powerful F...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://pandas.pydata.org/",
+        "title": "pandas - Python Data Analysis Library",
+        "description": "",
+        "snippet": "pandas pandas is a fast, powerful, flexible and easy to use open source data analysis and manipulation tool, built on top of the Python programming language. Install pandas now! Getting started Install pandas Getting started Try pandas online Documen...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://docs.anthropic.com/",
+        "title": "Documentation - Claude Platform Docs",
+        "description": "Claude API Documentation",
+        "snippet": "Claude Platform Start building with Claude Everything you need to integrate Claude into your applications. From first API call to production.  Search Ctrl K  Quickstart  Get API key  API reference Python TypeScript Go Java Ruby PHP C# cURL CLI  ...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://xon.sh/",
+        "title": "Xonsh — Python-powered shell for Linux, macOS, Windows, Android",
+        "description": "The Xonsh shell is a Python-powered shell. Full-featured, cross-platform and AI-friendly. It works on Linux, macOS, Windows, Android, BSD.",
+        "snippet": "XONSH is a Python-powered shell Xonsh (sounds like \"consh\") is a full-featured and cross-platform Python-based shell. The language is a superset of Python 3 with seamless integration of shell functionality and commands. It works on all major platform...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://www.openstack.org/",
+        "title": "Open Source Cloud Computing Infrastructure - OpenStack",
+        "description": "OpenStack is an open source cloud computing infrastructure software project and is one of the three most active open source projects in the world.",
+        "snippet": "Cloud Infrastructure for Virtual Machines, Bare Metal, and Containers Openstack controls large pools of compute, storage, and networking resources, all managed through APIs or a dashboard. Beyond standard infrastructure-as-a-service functionality, ad...",
+        "pagerank": 0.0017377294099379873
+    },
+    {
+        "url": "https://github.com",
+        "title": "GitHub · Change is constant. GitHub keeps you ahead. · GitHub",
+        "description": "Join the world's most widely adopted, AI-powered developer platform where millions of developers, businesses, and the largest open source community build software that advances humanity.",
+        "snippet": "The future of building happens together Tools and trends evolve, but collaboration endures. With GitHub, developers, agents, and code come together on one platform. Enter your email Sign up for GitHub Download GitHub Copilot app GitHub features A dem...",
+        "pagerank": 0.0017336485421591808
+    },
+    {
+        "url": "https://www.minecraft.net",
+        "title": "Welcome to the Minecraft Official Site | Minecraft",
+        "description": "Explore new gaming adventures, accessories, & merchandise on the Minecraft Official Site. Buy & download the game here, or check the site for the latest news.",
+        "snippet": "Skip to Main Content Welcome to the official site of Minecraft Pre-order now! Enter a new dimension in Minecraft Dungeons II! Brave the Sift and face unfamiliar threats that will challenge you like never before. Pre-order The Hero Cape Play Minecraft...",
+        "pagerank": 0.0017306245297215956
     },
     {
         "url": "https://quotes.toscrape.com/",
         "title": "Quotes to Scrape",
         "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.026223608839395667
+        "snippet": "Quotes to Scrape Login “The world as we have created it is a process of our thinking. It cannot be changed without changing our thinking.” by Albert Einstein (about) Tags: change deep-thoughts thinking world “It is our choices, Harry, that show what ...",
+        "pagerank": 0.001698043558508675
     },
     {
-        "url": "https://quotes.toscrape.com/login",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.026223608839395667
+        "url": "https://www.microsoft.com",
+        "title": "Microsoft – AI, Cloud, Productivity, Computing, Gaming & Apps",
+        "description": "Explore Microsoft products and services and support for your home or business. Shop Microsoft 365, Copilot, Teams, Xbox, Windows, Azure, Surface and more.",
+        "snippet": "Hi there, welcome to Microsoft Personal Find what you need faster with AI-powered suggestions Ask a question Help me choose a PC Microsoft 365 tips Sign in to my account $ • • • • • • on Surface Pro, Copilot+ PC, 12-inch Awarded 2025 Esquire Best Tab...",
+        "pagerank": 0.001678657074340528
     },
     {
-        "url": "https://quotes.toscrape.com/tag/love/",
-        "title": "Quotes to Scrape",
+        "url": "https://www.google.com",
+        "title": "Google",
         "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.011027539037643813
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/inspirational/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.011027539037643813
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/humor/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.011027539037643813
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/books/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.011027539037643813
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/reading/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.011027539037643813
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/friends/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.011027539037643813
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/friendship/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.011027539037643813
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/truth/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.011027539037643813
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/simile/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.011027539037643813
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/life/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.011027539037643813
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/life/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.007024113639317151
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/inspirational/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.0069250844806086455
-    },
-    {
-        "url": "https://quotes.toscrape.com/author/Albert-Einstein",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Born: March 14, 1879 in Ulm, Germany Description: Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.006237397247751648
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/books/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.005978007700554844
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/humor/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.005542735178941174
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/love/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.005398403632043929
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/friends/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.005264714281547839
-    },
-    {
-        "url": "https://quotes.toscrape.com/author/Marilyn-Monroe",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Born: June 01, 1926 in The United States Description: Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.0052593939843792875
-    },
-    {
-        "url": "https://quotes.toscrape.com/author/Jane-Austen",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Born: December 16, 1775 in Steventon Rectory, Hampshire, The United Kingdom Description: Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.005123913758782448
-    },
-    {
-        "url": "https://quotes.toscrape.com/author/Mark-Twain",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Born: November 30, 1835 in Florida, Missouri, The United States Description: Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.005072139237171019
-    },
-    {
-        "url": "https://quotes.toscrape.com/author/J-K-Rowling",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Born: July 31, 1965 in Yate, South Gloucestershire, England, The United Kingdom Description: Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.004771877121860023
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/simile/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.004640615412510833
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/sisters/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.00462026483860074
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/heartbreak/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.00462026483860074
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/classic/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.004468250373963798
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/live/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.004402396312490758
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/miracle/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.004402396312490758
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/miracles/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.004402396312490758
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/obvious/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.004299633108026115
-    },
-    {
-        "url": "https://quotes.toscrape.com/author/Steve-Martin",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Born: August 14, 1945 in Waco, Texas, The United States Description: Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.004299633108026115
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/aliteracy/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.00420787278175283
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/thinking/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.004198181279766334
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/edison/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.00402287934600966
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/paraphrased/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.00402287934600966
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/failure/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.00402287934600966
-    },
-    {
-        "url": "https://quotes.toscrape.com/author/Thomas-A-Edison",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Born: February 11, 1847 in Milan, Ohio, The United States Description: Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.00402287934600966
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/change/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.003862824228947219
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/deep-thoughts/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.003862824228947219
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/world/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.003862824228947219
-    },
-    {
-        "url": "https://quotes.toscrape.com/author/Andre-Gide",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Born: November 22, 1869 in Paris, France Description: Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.0038556024983230864
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/adulthood/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.0037074037316731636
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/success/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.0037074037316731636
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/value/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.0037074037316731636
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/be-yourself/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.003684318976731612
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/choices/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.00353576306728534
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/abilities/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.00353576306728534
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/misattributed-eleanor-roosevelt/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.0033607238736260646
-    },
-    {
-        "url": "https://quotes.toscrape.com/author/Eleanor-Roosevelt",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Born: October 11, 1884 in The United States Description: Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.0033607238736260646
-    },
-    {
-        "url": "https://quotes.toscrape.com/tag/navigation/page/1/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.003282469452787061
-    },
-    {
-        "url": "https://quotes.toscrape.com/author/Douglas-Adams",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Born: March 11, 1952 in Cambridge, England, The United Kingdom Description: Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.003282469452787061
-    },
-    {
-        "url": "https://quotes.toscrape.com/page/2/",
-        "title": "Quotes to Scrape",
-        "description": "",
-        "snippet": "Login Quotes by: GoodReads.com Made with ❤ by Zyte...",
-        "pagerank": 0.003182184164867818
+        "snippet": "About Store What's on your mind? Add images Add files 🍌 Create images Canvas AI Mode 🍌 Create Remove Create Images Canvas Remove Canvas See more Delete Report inappropriate predictions Advertising Business How Search works Build, create, and do more ...",
+        "pagerank": 0.001666666666666667
     }
 ]
