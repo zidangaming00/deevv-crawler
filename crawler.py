@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
@@ -288,195 +289,84 @@ class ProductionD1Crawler:
         self.pages_data[url]['pagerank'] = new_pr[url]
 
 
-# --- TANGGUH: SYNC DENGAN PAGINATION BIAR GAK ERROR LIMIT API ---
+# --- TANGGUH: SYNC DENGAN RETRY & ABORT SYSTEM ---
 def get_already_visited_urls():
   if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
-    return set()
+    print('[CRITICAL ERROR] Secrets Cloudflare D1 belum terpasang!')
+    sys.exit(1)
 
-  url_d1 = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/raw'
+  # Menggunakan endpoint /query yang lebih stabil dari /raw
+  url_d1 = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/query'
   headers = {
       'Authorization': f'Bearer {CF_API_TOKEN}',
       'Content-Type': 'application/json',
   }
 
   visited = set()
-  limit = 5000  # Tarik aman per 5000 data
+  limit = 2500  # Tarik aman per 2500 data agar tidak timeout
   offset = 0
+  max_retries = 3
 
   print('\n[D1 SYNC] Mengambil daftar URL lama dari Cloudflare D1...')
   
   while True:
-    try:
-      sql_query = f'SELECT url FROM documents LIMIT {limit} OFFSET {offset}'
-      res = requests.post(
-          url_d1, headers=headers, json={'sql': sql_query}, timeout=30
-      )
-      
-      if res.status_code == 200 and res.json().get('success'):
-        result_data = res.json()[0].get('results', {})
-        rows = result_data.get('rows', [])
+    success = False
+    
+    for attempt in range(max_retries):
+      try:
+        sql_query = f'SELECT url FROM documents LIMIT {limit} OFFSET {offset}'
+        res = requests.post(
+            url_d1, headers=headers, json={'sql': sql_query}, timeout=30
+        )
         
-        if not rows:
-          break  # Data habis, loop selesai
-          
-        for row in rows:
-          if row and len(row) > 0:
-            visited.add(row[0])
+        if res.status_code == 200:
+          data = res.json()
+          if data.get('success'):
+            # Menangani struktur data dari endpoint D1 API
+            results_data = data.get('result', [{}])[0].get('results', [])
             
-        print(f'[D1 SYNC] Sedang memuat... total terbaca: {len(visited)} URL')
-        
-        if len(rows) < limit:
-          break  # Sudah mencapai akhir data
+            # Format bisa berupa list of dicts atau dictionary dengan 'rows'
+            if isinstance(results_data, dict) and 'rows' in results_data:
+                rows = results_data['rows']
+            else:
+                rows = results_data
+                
+            for row in rows:
+              if isinstance(row, dict) and 'url' in row:
+                visited.add(row['url'])
+              elif isinstance(row, (list, tuple)) and len(row) > 0:
+                visited.add(row[0])
+                
+            print(f'[D1 SYNC] Sedang memuat... total terbaca: {len(visited)} URL')
+            success = True
+            
+            # Jika baris yang dikembalikan lebih sedikit dari limit, berarti data habis
+            if len(rows) < limit:
+              print(f'[D1 SYNC DONE] Berhasil memuat total {len(visited)} URL lama!')
+              return visited
+              
+            offset += limit
+            break # Berhasil, keluar dari loop retry dan lanjut ke batch berikutnya
+            
+          else:
+            print(f'[D1 SYNC WARNING] D1 Error: {data.get("errors")}')
+        else:
+          print(f'[D1 SYNC WARNING] HTTP Error {res.status_code}: {res.text}')
           
-        offset += limit
-      else:
-        print(f'[D1 SYNC WARNING] Gagal tarik batch pada offset {offset}.')
-        break
-    except Exception as e:
-      print(f'[D1 SYNC WARNING] Error jaringan saat sync: {e}')
-      break
+      except Exception as e:
+        print(f'[D1 SYNC WARNING] Error jaringan: {e}')
+      
+      print(f'[D1 SYNC] Mencoba ulang ({attempt + 1}/{max_retries}) untuk offset {offset}...')
+      time.sleep(3) # Tunggu 3 detik sebelum retry
 
-  print(
-      f'[D1 SYNC DONE] Total {len(visited)} URL berhasil dimuat ke memori!'
-  )
+    # Jika setelah max_retries tetap False (gagal), matikan script!
+    if not success:
+      print(f'\n[CRITICAL ERROR] Gagal menarik data dari D1 pada offset {offset}!')
+      print('[CRITICAL ERROR] Crawler DIBATALKAN untuk mencegah duplikasi data dan menghemat kuota GitHub Actions!')
+      sys.exit(1)
+
   return visited
 
 
 # --- CLOUDFLARE D1 ASYNC BATCH PUSH ---
-async def push_single_page_async(session, url_d1_batch, headers, page):
-  title = page.get('title', '').replace("'", "''")
-  snippet = page.get('snippet', '').replace("'", "''")
-  page_url = page.get('url', '').replace("'", "''")
-  domain = page.get('domain', '').replace("'", "''")
-  favicon = page.get('favicon', '').replace("'", "''")
-  thumbnail = page.get('thumbnail', '').replace("'", "''")
-  pagerank = page.get('pagerank', 0.0)
-
-  clean_title = re.sub(r'[^\w\s]', '', title)
-  clean_snippet = re.sub(r'[^\w\s]', '', snippet)
-
-  payload = [
-      {
-          'sql': f"""
-            INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, pagerank)
-            VALUES ('{page_url}', '{domain}', '{title}', '{snippet}', '{favicon}', '{thumbnail}', {pagerank})
-            ON CONFLICT(url) DO UPDATE SET 
-                title=excluded.title, 
-                snippet=excluded.snippet,
-                favicon=excluded.favicon,
-                thumbnail=excluded.thumbnail,
-                pagerank=excluded.pagerank;
-        """
-      },
-      {
-          'sql': f"""
-            INSERT INTO documents_fts(rowid, title, snippet)
-            SELECT id, '{clean_title}', '{clean_snippet}' FROM documents WHERE url = '{page_url}'
-            ON CONFLICT(rowid) DO UPDATE SET title=excluded.title, snippet=excluded.snippet;
-        """
-      },
-  ]
-
-  try:
-    async with session.post(
-        url_d1_batch, headers=headers, json=payload
-    ) as response:
-      return response.status == 200
-  except Exception:
-    return False
-
-
-async def push_to_cloudflare_d1_async(crawled_data):
-  if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
-    print('[ERROR] Secrets Cloudflare D1 belum terpasang di GitHub!')
-    return
-
-  url_d1_batch = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/batch'
-  headers = {
-      'Authorization': f'Bearer {CF_API_TOKEN}',
-      'Content-Type': 'application/json',
-  }
-
-  print(
-      f'\n[D1 PUSH] Memulai upload paralel {len(crawled_data)} dokumen baru ke'
-      ' Cloudflare D1...'
-  )
-
-  semaphore = asyncio.Semaphore(25)
-
-  async def sem_push(session, page):
-    async with semaphore:
-      return await push_single_page_async(session, url_d1_batch, headers, page)
-
-  async with aiohttp.ClientSession() as session:
-    tasks = [sem_push(session, page) for page in crawled_data]
-    results = await asyncio.gather(*tasks)
-
-  success_count = sum(1 for r in results if r)
-  print(
-      f'[D1 FINISH] Selesai! {success_count}/{len(crawled_data)} dokumen baru'
-      ' berhasil ditambahkan ke Cloudflare D1.'
-  )
-
-
-if __name__ == '__main__':
-  # Seed URLs Baru (Search Engine, News, Sports, Esports, Games, Top-up Store)
-  initial_seeds = [
-      # Search Engines & Portals
-      'https://duckduckgo.com',
-      'https://www.bing.com',
-      'https://www.yahoo.com',
-      'https://www.ecosia.org',
-      # General News & Tech (Indo & Global)
-      'https://id.wikipedia.org',
-      'https://www.kompas.com',
-      'https://www.detik.com',
-      'https://www.liputan6.com',
-      'https://www.tribunnews.com',
-      'https://www.cnnindonesia.com',
-      'https://www.theverge.com',
-      'https://techcrunch.com',
-      'https://github.com',
-      'https://stackoverflow.com',
-      # Sports & Esports
-      'https://www.bola.net',
-      'https://www.bolasport.com',
-      'https://www.goal.com/id',
-      'https://oneesports.gg/id',
-      'https://www.hltv.org',
-      'https://liquipedia.net',
-      # Gaming & Platforms
-      'https://www.ign.com',
-      'https://www.gamespot.com',
-      'https://www.minecraft.net',
-      'https://store.steampowered.com',
-      'https://www.epicgames.com',
-      'https://www.roblox.com',
-      'https://m.mobilelegends.com',
-      'https://ff.garena.com',
-      # Top-up Stores & Marketplaces
-      'https://www.codashop.com/id-id',
-      'https://www.unipin.com',
-      'https://www.itemku.com',
-      'https://kiosgamer.co.id',
-  ]
-
-  crawler = ProductionD1Crawler(
-      seed_urls=initial_seeds,
-      max_run_seconds=3600,  # Berjalan 1 Jam
-      concurrency=15,
-  )
-
-  # 1. Tarik URL lama (Pasti berhasil menarik 19.377 URL sekarang!)
-  existing_urls = get_already_visited_urls()
-  crawler.visited_urls.update(existing_urls)
-
-  # 2. Jalankan Crawler (hanya menyasar link baru)
-  asyncio.run(crawler.run())
-
-  # 3. Hitung PageRank
-  crawler.calculate_pagerank()
-
-  # 4. Upload data baru ke D1
-  crawled_results = list(crawler.pages_data.values())
-  asyncio.run(push_to_cloudflare_d1_async(crawled_results))
+async def push_single_page_
