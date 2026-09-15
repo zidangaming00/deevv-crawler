@@ -369,4 +369,145 @@ def get_already_visited_urls():
 
 
 # --- CLOUDFLARE D1 ASYNC BATCH PUSH ---
-async def push_single_page_
+async def push_single_page_async(session, url_d1_batch, headers, page):
+  title = page.get('title', '').replace("'", "''")
+  snippet = page.get('snippet', '').replace("'", "''")
+  page_url = page.get('url', '').replace("'", "''")
+  domain = page.get('domain', '').replace("'", "''")
+  favicon = page.get('favicon', '').replace("'", "''")
+  thumbnail = page.get('thumbnail', '').replace("'", "''")
+  pagerank = page.get('pagerank', 0.0)
+
+  clean_title = re.sub(r'[^\w\s]', '', title)
+  clean_snippet = re.sub(r'[^\w\s]', '', snippet)
+
+  payload = [
+      {
+          'sql': f"""
+            INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, pagerank)
+            VALUES ('{page_url}', '{domain}', '{title}', '{snippet}', '{favicon}', '{thumbnail}', {pagerank})
+            ON CONFLICT(url) DO UPDATE SET 
+                title=excluded.title, 
+                snippet=excluded.snippet,
+                favicon=excluded.favicon,
+                thumbnail=excluded.thumbnail,
+                pagerank=excluded.pagerank;
+        """
+      },
+      {
+          'sql': f"""
+            INSERT INTO documents_fts(rowid, title, snippet)
+            SELECT id, '{clean_title}', '{clean_snippet}' FROM documents WHERE url = '{page_url}'
+            ON CONFLICT(rowid) DO UPDATE SET title=excluded.title, snippet=excluded.snippet;
+        """
+      },
+  ]
+
+  try:
+    async with session.post(
+        url_d1_batch, headers=headers, json=payload
+    ) as response:
+      return response.status == 200
+  except Exception:
+    return False
+
+
+async def push_to_cloudflare_d1_async(crawled_data):
+  if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
+    print('[ERROR] Secrets Cloudflare D1 belum terpasang di GitHub!')
+    return
+
+  url_d1_batch = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/batch'
+  headers = {
+      'Authorization': f'Bearer {CF_API_TOKEN}',
+      'Content-Type': 'application/json',
+  }
+
+  print(
+      f'\n[D1 PUSH] Memulai upload paralel {len(crawled_data)} dokumen baru ke'
+      ' Cloudflare D1...'
+  )
+
+  semaphore = asyncio.Semaphore(25)
+
+  async def sem_push(session, page):
+    async with semaphore:
+      return await push_single_page_async(session, url_d1_batch, headers, page)
+
+  async with aiohttp.ClientSession() as session:
+    tasks = [sem_push(session, page) for page in crawled_data]
+    results = await asyncio.gather(*tasks)
+
+  success_count = sum(1 for r in results if r)
+  print(
+      f'[D1 FINISH] Selesai! {success_count}/{len(crawled_data)} dokumen baru'
+      ' berhasil ditambahkan ke Cloudflare D1.'
+  )
+
+
+if __name__ == '__main__':
+  # Seed URLs Baru (Search Engine, News, Sports, Esports, Games, Top-up Store)
+  initial_seeds = [
+      # Search Engines & Portals
+      'https://duckduckgo.com',
+      'https://www.bing.com',
+      'https://www.yahoo.com',
+      'https://www.ecosia.org',
+      # General News & Tech (Indo & Global)
+      'https://id.wikipedia.org',
+      'https://www.kompas.com',
+      'https://www.detik.com',
+      'https://www.liputan6.com',
+      'https://www.tribunnews.com',
+      'https://www.cnnindonesia.com',
+      'https://www.theverge.com',
+      'https://techcrunch.com',
+      'https://github.com',
+      'https://stackoverflow.com',
+      # Sports & Esports
+      'https://www.bola.net',
+      'https://www.bolasport.com',
+      'https://www.goal.com/id',
+      'https://oneesports.gg/id',
+      'https://www.hltv.org',
+      'https://liquipedia.net',
+      # Gaming & Platforms
+      'https://www.ign.com',
+      'https://www.gamespot.com',
+      'https://www.minecraft.net',
+      'https://store.steampowered.com',
+      'https://www.epicgames.com',
+      'https://www.roblox.com',
+      'https://m.mobilelegends.com',
+      'https://ff.garena.com',
+      # Top-up Stores & Marketplaces
+      'https://www.codashop.com/id-id',
+      'https://www.unipin.com',
+      'https://www.itemku.com',
+      'https://kiosgamer.co.id',
+  ]
+
+  # 1. Tarik URL lama dari D1 terlebih dahulu (dengan abort system!)
+  existing_urls = get_already_visited_urls()
+
+  crawler = ProductionD1Crawler(
+      seed_urls=initial_seeds,
+      max_run_seconds=3600,  # Berjalan 1 Jam
+      concurrency=15,
+  )
+
+  # 2. Masukkan daftar URL lama agar dilewati (di-skip)
+  crawler.visited_urls.update(existing_urls)
+
+  # 3. Jalankan Crawler (hanya menyasar link baru)
+  asyncio.run(crawler.run())
+
+  # 4. Hitung PageRank
+  crawler.calculate_pagerank()
+
+  # 5. Upload data baru ke D1
+  crawled_results = list(crawler.pages_data.values())
+  if crawled_results:
+      asyncio.run(push_to_cloudflare_d1_async(crawled_results))
+  else:
+      print("\n[INFO] Tidak ada halaman baru yang dicrawl. Skip upload.")
