@@ -228,10 +228,13 @@ class ProductionD1Crawler:
         continue
 
       elapsed = int(time.time() - self.start_time)
-      print(
-          f'[{elapsed}s/{self.max_run_seconds}s] [{len(self.pages_data)} indexed]'
-          f' Merayapi: {url}'
-      )
+      # Log dipersingkat: cetak progres tiap 50 halaman, bukan tiap halaman,
+      # biar log GitHub Actions gak jadi puluhan ribu baris dan berat dibuka.
+      if len(self.pages_data) % 50 == 0:
+        print(
+            f'[{elapsed}s/{self.max_run_seconds}s] [{len(self.pages_data)} indexed]'
+            f' Merayapi: {url}'
+        )
 
       html = await self.fetch(session, url)
       if html:
@@ -308,54 +311,54 @@ def get_already_visited_urls():
   max_retries = 3
 
   print('\n[D1 SYNC] Mengambil daftar URL lama dari Cloudflare D1...')
-  
+
   while True:
     success = False
-    
+
     for attempt in range(max_retries):
       try:
         sql_query = f'SELECT url FROM documents LIMIT {limit} OFFSET {offset}'
         res = requests.post(
             url_d1, headers=headers, json={'sql': sql_query}, timeout=30
         )
-        
+
         if res.status_code == 200:
           data = res.json()
           if data.get('success'):
             # Menangani struktur data dari endpoint D1 API
             results_data = data.get('result', [{}])[0].get('results', [])
-            
+
             # Format bisa berupa list of dicts atau dictionary dengan 'rows'
             if isinstance(results_data, dict) and 'rows' in results_data:
                 rows = results_data['rows']
             else:
                 rows = results_data
-                
+
             for row in rows:
               if isinstance(row, dict) and 'url' in row:
                 visited.add(row['url'])
               elif isinstance(row, (list, tuple)) and len(row) > 0:
                 visited.add(row[0])
-                
+
             print(f'[D1 SYNC] Sedang memuat... total terbaca: {len(visited)} URL')
             success = True
-            
+
             # Jika baris yang dikembalikan lebih sedikit dari limit, berarti data habis
             if len(rows) < limit:
               print(f'[D1 SYNC DONE] Berhasil memuat total {len(visited)} URL lama!')
               return visited
-              
+
             offset += limit
             break # Berhasil, keluar dari loop retry dan lanjut ke batch berikutnya
-            
+
           else:
             print(f'[D1 SYNC WARNING] D1 Error: {data.get("errors")}')
         else:
           print(f'[D1 SYNC WARNING] HTTP Error {res.status_code}: {res.text}')
-          
+
       except Exception as e:
         print(f'[D1 SYNC WARNING] Error jaringan: {e}')
-      
+
       print(f'[D1 SYNC] Mencoba ulang ({attempt + 1}/{max_retries}) untuk offset {offset}...')
       time.sleep(3) # Tunggu 3 detik sebelum retry
 
@@ -388,8 +391,8 @@ async def push_single_page_async(session, url_d1_query, headers, page):
           'sql': f"""
             INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, pagerank)
             VALUES ('{page_url}', '{domain}', '{title}', '{snippet}', '{favicon}', '{thumbnail}', {pagerank})
-            ON CONFLICT(url) DO UPDATE SET 
-                title=excluded.title, 
+            ON CONFLICT(url) DO UPDATE SET
+                title=excluded.title,
                 snippet=excluded.snippet,
                 favicon=excluded.favicon,
                 thumbnail=excluded.thumbnail,
@@ -407,14 +410,20 @@ async def push_single_page_async(session, url_d1_query, headers, page):
       }
   ]
 
+  # === FIX UTAMA ===
+  # Cloudflare D1 REST API cuma terima body {"sql": ...} (satu query)
+  # atau {"batch": [...]} (banyak query). Array mentah DITOLAK (400,
+  # "Expected object, received array"). Makanya harus dibungkus di sini:
+  body = {"batch": payload}
+
   try:
     async with session.post(
-        url_d1_query, headers=headers, json=payload
+        url_d1_query, headers=headers, json=body
     ) as response:
-      
+
       if response.status == 200:
           return True
-          
+
       # JANGAN DITELAN: Print error nyata dari D1 kalau gagal!
       text = await response.text()
       print(f'[D1 PUSH ERROR] Gagal push {page_url} -> Status {response.status}: {text[:500]}')
@@ -429,7 +438,7 @@ async def push_to_cloudflare_d1_async(crawled_data):
     print('[ERROR] Secrets Cloudflare D1 belum terpasang di GitHub!')
     return
 
-  # FIX UTAMA: Gunakan endpoint /query , BUKAN /batch
+  # Gunakan endpoint /query , BUKAN /batch (endpoint /batch tidak ada di D1 REST API)
   url_d1_query = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/query'
   headers = {
       'Authorization': f'Bearer {CF_API_TOKEN}',
