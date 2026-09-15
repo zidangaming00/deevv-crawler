@@ -369,17 +369,19 @@ def get_already_visited_urls():
 
 
 # --- CLOUDFLARE D1 ASYNC BATCH PUSH ---
-async def push_single_page_async(session, url_d1_batch, headers, page):
-  title = page.get('title', '').replace("'", "''")
-  snippet = page.get('snippet', '').replace("'", "''")
+async def push_single_page_async(session, url_d1_query, headers, page):
+  # Bersihkan kutip dan enter agar SQL tidak patah
+  title = page.get('title', '').replace("'", "''").replace("\n", " ")
+  snippet = page.get('snippet', '').replace("'", "''").replace("\n", " ")
   page_url = page.get('url', '').replace("'", "''")
   domain = page.get('domain', '').replace("'", "''")
   favicon = page.get('favicon', '').replace("'", "''")
   thumbnail = page.get('thumbnail', '').replace("'", "''")
   pagerank = page.get('pagerank', 0.0)
 
-  clean_title = re.sub(r'[^\w\s]', '', title)
-  clean_snippet = re.sub(r'[^\w\s]', '', snippet)
+  # Pakai spasi untuk replace karakter aneh, biar kata nggak nempel
+  clean_title = re.sub(r'[^\w\s]', ' ', title)
+  clean_snippet = re.sub(r'[^\w\s]', ' ', snippet)
 
   payload = [
       {
@@ -395,20 +397,30 @@ async def push_single_page_async(session, url_d1_batch, headers, page):
         """
       },
       {
+          'sql': f"DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE url = '{page_url}');"
+      },
+      {
           'sql': f"""
             INSERT INTO documents_fts(rowid, title, snippet)
-            SELECT id, '{clean_title}', '{clean_snippet}' FROM documents WHERE url = '{page_url}'
-            ON CONFLICT(rowid) DO UPDATE SET title=excluded.title, snippet=excluded.snippet;
+            SELECT id, '{clean_title}', '{clean_snippet}' FROM documents WHERE url = '{page_url}';
         """
-      },
+      }
   ]
 
   try:
     async with session.post(
-        url_d1_batch, headers=headers, json=payload
+        url_d1_query, headers=headers, json=payload
     ) as response:
-      return response.status == 200
-  except Exception:
+      
+      if response.status == 200:
+          return True
+          
+      # JANGAN DITELAN: Print error nyata dari D1 kalau gagal!
+      text = await response.text()
+      print(f'[D1 PUSH ERROR] Gagal push {page_url} -> Status {response.status}: {text[:500]}')
+      return False
+  except Exception as e:
+    print(f'[D1 PUSH EXCEPTION] Error jaringan saat push {page_url} -> {e}')
     return False
 
 
@@ -417,7 +429,8 @@ async def push_to_cloudflare_d1_async(crawled_data):
     print('[ERROR] Secrets Cloudflare D1 belum terpasang di GitHub!')
     return
 
-  url_d1_batch = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/batch'
+  # FIX UTAMA: Gunakan endpoint /query , BUKAN /batch
+  url_d1_query = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/query'
   headers = {
       'Authorization': f'Bearer {CF_API_TOKEN}',
       'Content-Type': 'application/json',
@@ -432,7 +445,7 @@ async def push_to_cloudflare_d1_async(crawled_data):
 
   async def sem_push(session, page):
     async with semaphore:
-      return await push_single_page_async(session, url_d1_batch, headers, page)
+      return await push_single_page_async(session, url_d1_query, headers, page)
 
   async with aiohttp.ClientSession() as session:
     tasks = [sem_push(session, page) for page in crawled_data]
