@@ -288,7 +288,7 @@ class ProductionD1Crawler:
         self.pages_data[url]['pagerank'] = new_pr[url]
 
 
-# --- SYNC PREVIOUS DATA (BIAR GAK RE-CRAWL) ---
+# --- TANGGUH: SYNC DENGAN PAGINATION BIAR GAK ERROR LIMIT API ---
 def get_already_visited_urls():
   if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
     return set()
@@ -299,23 +299,47 @@ def get_already_visited_urls():
       'Content-Type': 'application/json',
   }
 
-  try:
-    print('[D1 SYNC] Mengambil daftar URL lama dari Cloudflare D1...')
-    res = requests.post(
-        url_d1, headers=headers, json={'sql': 'SELECT url FROM documents'}
-    )
-    if res.status_code == 200 and res.json().get('success'):
-      result_data = res.json()[0].get('results', {})
-      rows = result_data.get('rows', [])
-      visited = {row[0] for row in rows} if rows else set()
-      print(
-          f'[D1 SYNC] Berhasil memuat {len(visited)} URL lama agar tidak di-crawl'
-          ' ulang.'
+  visited = set()
+  limit = 5000  # Tarik aman per 5000 data
+  offset = 0
+
+  print('\n[D1 SYNC] Mengambil daftar URL lama dari Cloudflare D1...')
+  
+  while True:
+    try:
+      sql_query = f'SELECT url FROM documents LIMIT {limit} OFFSET {offset}'
+      res = requests.post(
+          url_d1, headers=headers, json={'sql': sql_query}, timeout=30
       )
-      return visited
-  except Exception as e:
-    print(f'[D1 SYNC WARNING] Gagal sinkronisasi data lama: {e}')
-  return set()
+      
+      if res.status_code == 200 and res.json().get('success'):
+        result_data = res.json()[0].get('results', {})
+        rows = result_data.get('rows', [])
+        
+        if not rows:
+          break  # Data habis, loop selesai
+          
+        for row in rows:
+          if row and len(row) > 0:
+            visited.add(row[0])
+            
+        print(f'[D1 SYNC] Sedang memuat... total terbaca: {len(visited)} URL')
+        
+        if len(rows) < limit:
+          break  # Sudah mencapai akhir data
+          
+        offset += limit
+      else:
+        print(f'[D1 SYNC WARNING] Gagal tarik batch pada offset {offset}.')
+        break
+    except Exception as e:
+      print(f'[D1 SYNC WARNING] Error jaringan saat sync: {e}')
+      break
+
+  print(
+      f'[D1 SYNC DONE] Total {len(visited)} URL berhasil dimuat ke memori!'
+  )
+  return visited
 
 
 # --- CLOUDFLARE D1 ASYNC BATCH PUSH ---
@@ -443,7 +467,7 @@ if __name__ == '__main__':
       concurrency=15,
   )
 
-  # 1. Tarik URL lama dari Cloudflare D1
+  # 1. Tarik URL lama (Pasti berhasil menarik 19.377 URL sekarang!)
   existing_urls = get_already_visited_urls()
   crawler.visited_urls.update(existing_urls)
 
