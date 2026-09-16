@@ -469,12 +469,14 @@ async def push_to_cloudflare_d1_async(crawled_data):
 
 if __name__ == '__main__':
   # Seed URLs Baru (Search Engine, News, Sports, Esports, Games, Top-up Store)
+  # Seed URLs Baru (Search Engine, News, Sports, Esports, Games, Top-up Store, Forum, Edu, Gov)
   initial_seeds = [
       # Search Engines & Portals
       'https://duckduckgo.com',
       'https://www.bing.com',
       'https://www.yahoo.com',
       'https://www.ecosia.org',
+      
       # General News & Tech (Indo & Global)
       'https://id.wikipedia.org',
       'https://www.kompas.com',
@@ -486,6 +488,7 @@ if __name__ == '__main__':
       'https://techcrunch.com',
       'https://github.com',
       'https://stackoverflow.com',
+      
       # Sports & Esports
       'https://www.bola.net',
       'https://www.bolasport.com',
@@ -493,6 +496,7 @@ if __name__ == '__main__':
       'https://oneesports.gg/id',
       'https://www.hltv.org',
       'https://liquipedia.net',
+      
       # Gaming & Platforms
       'https://www.ign.com',
       'https://www.gamespot.com',
@@ -502,12 +506,48 @@ if __name__ == '__main__':
       'https://www.roblox.com',
       'https://m.mobilelegends.com',
       'https://ff.garena.com',
+      
       # Top-up Stores & Marketplaces
       'https://www.codashop.com/id-id',
       'https://www.unipin.com',
       'https://www.itemku.com',
       'https://kiosgamer.co.id',
+
+      # --- TAMBAHAN BARU DI BAWAH INI ---
+
+      # Forum & Komunitas Diskusi
+      'https://www.kaskus.co.id',
+      'https://id.quora.com',
+      'https://brainly.co.id',
+      'https://www.reddit.com',
+      'https://stackexchange.com',
+      'https://www.minecraftforum.net',
+
+      # Pemerintah & Layanan Publik (GO.ID)
+      'https://indonesia.go.id',
+      'https://www.kemdikbud.go.id',
+      'https://www.kominfo.go.id',
+      'https://www.setneg.go.id',
+      'https://www.bps.go.id',
+      'https://www.pajak.go.id',
+
+      # Pendidikan & Akademik
+      'https://kampusmerdeka.kemdikbud.go.id',
+      'https://www.ui.ac.id',
+      'https://www.itb.ac.id',
+      'https://www.ugm.ac.id',
+      'https://www.ut.ac.id',
+
+      # Developer, Tech & Desain Kreatif
+      'https://developer.mozilla.org',
+      'https://www.w3schools.com',
+      'https://dev.to',
+      'https://medium.com',
+      'https://www.behance.net',
+      'https://dribbble.com',
+      'https://id.pinterest.com',
   ]
+
 
   # 1. Tarik URL lama dari D1 terlebih dahulu (dengan abort system!)
   existing_urls = get_already_visited_urls()
