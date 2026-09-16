@@ -33,7 +33,6 @@ class ProductionD1Crawler:
     self.max_run_seconds = max_run_seconds
     self.concurrency = concurrency
 
-    # [FIX] Menggunakan PriorityQueue agar URL penting didahulukan
     self.queue = asyncio.PriorityQueue()
     self.visited_urls = set()
     self.visited_domains = set()
@@ -42,20 +41,38 @@ class ProductionD1Crawler:
     self.graph = {}
     self.inbound = {}
     
-    # [FIX] Limit maksimal halaman per domain untuk menghindari Spider Trap
     self.domain_counts = {}
-    self.MAX_PAGES_PER_DOMAIN = 40  
+    self.MAX_PAGES_PER_DOMAIN = 40  # Cegah dominasi 1 situs
 
     self.start_time = time.time()
 
     self.headers = {
         'User-Agent': (
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            ' (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+            ' (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
             ' DeevvBot/1.0'
         ),
         'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
     }
+
+  # --- ANTI SPAM & URL SANITIZER ---
+  def is_spam_domain(self, domain):
+    # Memblokir TLD murah/gratis yang sering jadi Spider Trap
+    spam_tlds = ('.cn', '.xyz', '.top', '.pw', '.tk', '.ml', '.ga', '.cf', '.gq', '.wang', '.icu')
+    if any(domain.endswith(tld) for tld in spam_tlds):
+      return True
+    return False
+
+  def clean_url_string(self, url):
+    """
+    Membuang query parameters (?q=...) dan fragment (#) dari URL
+    """
+    parsed = urlparse(url)
+    clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    # Hapus trailing slash jika bukan root domain (misal: /about/ -> /about)
+    if len(clean_url) > len(f"{parsed.scheme}://{parsed.netloc}/") and clean_url.endswith('/'):
+        clean_url = clean_url[:-1]
+    return clean_url
 
   async def is_allowed_by_robots(self, session, url):
     parsed = urlparse(url)
@@ -67,9 +84,8 @@ class ProductionD1Crawler:
       rfp.set_url(robots_url)
 
       try:
-        async with session.get(
-            robots_url, timeout=4, headers=self.headers
-        ) as resp:
+        # Timeout agresif untuk robots.txt
+        async with session.get(robots_url, timeout=3, headers=self.headers) as resp:
           if resp.status == 200:
             content = await resp.text()
             rfp.parse(content.splitlines())
@@ -80,15 +96,13 @@ class ProductionD1Crawler:
 
       self.domain_robots[domain_base] = rfp
 
-    return self.domain_robots[domain_base].can_fetch(
-        self.headers['User-Agent'], url
-    )
+    return self.domain_robots[domain_base].can_fetch(self.headers['User-Agent'], url)
 
   def is_valid_url(self, url):
     parsed = urlparse(url)
     invalid_exts = (
         '.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip', 
-        '.css', '.js', '.svg', '.mp4', '.mp3', '.webp',
+        '.css', '.js', '.svg', '.mp4', '.mp3', '.webp', '.xml', '.json'
     )
     if any(parsed.path.lower().endswith(ext) for ext in invalid_exts):
       return False
@@ -99,9 +113,8 @@ class ProductionD1Crawler:
 
   async def fetch(self, session, url):
     try:
-      async with session.get(
-          url, timeout=10, headers=self.headers, allow_redirects=True
-      ) as response:
+      # Timeout dipersingkat menjadi 5 detik agar tidak hang di server lambat
+      async with session.get(url, timeout=5, headers=self.headers, allow_redirects=True) as response:
         content_type = response.headers.get('Content-Type', '').lower()
         if response.status == 200 and 'text/html' in content_type:
           return await response.text()
@@ -128,28 +141,16 @@ class ProductionD1Crawler:
         else ''
     )
 
-    icon_tag = soup.find(
-        'link',
-        rel=lambda r: r
-        and ('icon' in r.lower() or 'shortcut icon' in r.lower()),
-    )
+    icon_tag = soup.find('link', rel=lambda r: r and ('icon' in r.lower() or 'shortcut icon' in r.lower()))
     if icon_tag and icon_tag.get('href'):
       favicon = urljoin(url, icon_tag['href'])
     else:
       favicon = f'https://www.google.com/s2/favicons?domain={domain_name}&sz=64'
 
-    og_image = soup.find('meta', attrs={'property': 'og:image'}) or soup.find(
-        'meta', attrs={'name': 'twitter:image'}
-    )
-    thumbnail = (
-        urljoin(url, og_image['content'])
-        if og_image and og_image.get('content')
-        else ''
-    )
+    og_image = soup.find('meta', attrs={'property': 'og:image'}) or soup.find('meta', attrs={'name': 'twitter:image'})
+    thumbnail = urljoin(url, og_image['content']) if og_image and og_image.get('content') else ''
 
-    for element in soup([
-        'script', 'style', 'nav', 'header', 'footer', 'noscript', 'aside',
-    ]):
+    for element in soup(['script', 'style', 'nav', 'header', 'footer', 'noscript', 'aside']):
       element.extract()
 
     main_content = soup.find('main') or soup.find('article') or soup.body
@@ -157,7 +158,7 @@ class ProductionD1Crawler:
     if main_content:
       body_text = self.clean_text(main_content.get_text(separator=' '))
       
-    # [FIX] Logika Snippet: Prioritaskan Meta Description, baru ambil teks body
+    # Logika Snippet: Prioritaskan Meta Description!
     if description and len(description) > 20:
       snippet = description
     elif body_text:
@@ -167,41 +168,42 @@ class ProductionD1Crawler:
 
     outgoing_links = set()
     for link in soup.find_all('a', href=True):
-      abs_url = urljoin(url, link['href']).split('#')[0]
+      raw_url = urljoin(url, link['href'])
+      clean_url = self.clean_url_string(raw_url)
 
-      if self.is_valid_url(abs_url):
-        outgoing_links.add(abs_url)
-        parsed_abs = urlparse(abs_url)
+      if self.is_valid_url(clean_url):
+        parsed_abs = urlparse(clean_url)
         target_domain = parsed_abs.netloc
+        
+        # Tolak domain spam
+        if self.is_spam_domain(target_domain):
+            continue
+
+        outgoing_links.add(clean_url)
         root_domain_url = f'{parsed_abs.scheme}://{target_domain}/'
 
-        # Masukkan Root Domain ke antrean prioritas tinggi
-        if (
-            target_domain not in self.visited_domains
-            and root_domain_url not in self.visited_urls
-        ):
+        # Eksekusi Root Domain terlebih dahulu
+        if target_domain not in self.visited_domains and root_domain_url not in self.visited_urls:
           self.visited_domains.add(target_domain)
           await self.queue.put((0, root_domain_url))
 
-        # [FIX] Cek batas maksimal halaman per domain
         if target_domain not in self.domain_counts:
           self.domain_counts[target_domain] = 0
 
+        # Cek batas maksimal halaman per domain
         if self.domain_counts[target_domain] < self.MAX_PAGES_PER_DOMAIN:
-          if abs_url not in self.visited_urls:
-            # Langsung catat agar tidak ganda di antrean
-            self.visited_urls.add(abs_url)
+          if clean_url not in self.visited_urls:
+            self.visited_urls.add(clean_url)
             self.domain_counts[target_domain] += 1
             
-            # Sistem Skor Prioritas (Semakin kecil angka, semakin diprioritaskan)
+            # Sistem Prioritas: URL tanpa direktori/path panjang diutamakan
             path_segments = [p for p in parsed_abs.path.split('/') if p]
             priority_score = len(path_segments) * 10
             
-            # Prioritaskan subdomain khusus
             if target_domain.count('.') > 1 and "www" not in target_domain:
                 priority_score -= 5
                 
-            await self.queue.put((priority_score, abs_url))
+            await self.queue.put((priority_score, clean_url))
 
     self.pages_data[url] = {
         'url': url,
@@ -220,13 +222,9 @@ class ProductionD1Crawler:
         break
 
       try:
-        # [FIX] Karena PriorityQueue, kita ambil tuple (prioritas, url)
         priority, url = await asyncio.wait_for(self.queue.get(), timeout=3.0)
       except asyncio.TimeoutError:
-        if (
-            time.time() - self.start_time > self.max_run_seconds
-            or self.queue.empty()
-        ):
+        if time.time() - self.start_time > self.max_run_seconds or self.queue.empty():
           break
         continue
 
@@ -237,10 +235,7 @@ class ProductionD1Crawler:
 
       elapsed = int(time.time() - self.start_time)
       if len(self.pages_data) % 50 == 0:
-        print(
-            f'[{elapsed}s/{self.max_run_seconds}s] [{len(self.pages_data)} indexed]'
-            f' Merayapi: {url}'
-        )
+        print(f'[{elapsed}s/{self.max_run_seconds}s] [{len(self.pages_data)} indexed] Merayapi: {url}')
 
       html = await self.fetch(session, url)
       if html:
@@ -252,20 +247,17 @@ class ProductionD1Crawler:
     for url in self.seed_urls:
       parsed = urlparse(url)
       self.visited_domains.add(parsed.netloc)
-      # [FIX] Seed awal selalu dapat prioritas utama (0)
-      await self.queue.put((0, url))
+      # Seed selalu dapat antrean VVIP (0)
+      await self.queue.put((0, self.clean_url_string(url)))
 
-    async with aiohttp.ClientSession() as session:
-      tasks = [
-          asyncio.create_task(self.worker(session))
-          for _ in range(self.concurrency)
-      ]
+    # Pakai connector limit untuk mencegah Error: Too many open files
+    connector = aiohttp.TCPConnector(limit=50)
+    async with aiohttp.ClientSession(connector=connector) as session:
+      tasks = [asyncio.create_task(self.worker(session)) for _ in range(self.concurrency)]
       await asyncio.gather(*tasks, return_exceptions=True)
 
   def calculate_pagerank(self, damping_factor=0.85, iterations=15):
-    print(
-        f'\n[PAGERANK] Menghitung PageRank untuk {len(self.pages_data)} halaman...'
-    )
+    print(f'\n[PAGERANK] Menghitung PageRank untuk {len(self.pages_data)} halaman...')
     for node in self.pages_data.keys():
       self.inbound[node] = []
 
@@ -275,8 +267,7 @@ class ProductionD1Crawler:
           self.inbound[target].append(source)
 
     N = len(self.pages_data)
-    if N == 0:
-      return
+    if N == 0: return
 
     initial_pr = 1.0 / N
     for url in self.pages_data:
@@ -286,30 +277,30 @@ class ProductionD1Crawler:
       new_pr = {}
       for url in self.pages_data:
         rank_sum = sum(
-            (
-                self.pages_data[in_node]['pagerank']
-                / max(len(self.graph.get(in_node, [])), 1)
-            )
-            for in_node in self.inbound.get(url, [])
-            if in_node in self.pages_data
+            (self.pages_data[in_node]['pagerank'] / max(len(self.graph.get(in_node, [])), 1))
+            for in_node in self.inbound.get(url, []) if in_node in self.pages_data
         )
         new_pr[url] = ((1 - damping_factor) / N) + (damping_factor * rank_sum)
-
       for url in new_pr:
         self.pages_data[url]['pagerank'] = new_pr[url]
 
+    # --- DOMAIN AUTHORITY BOOST ---
+    # Mendongkrak nilai PR untuk domain besar dan seed urls agar selalu tampil duluan di pencarian
+    print("[PAGERANK] Menyuntikkan bobot Domain Authority...")
+    seed_domains = {urlparse(seed).netloc for seed in self.seed_urls}
+    for url in self.pages_data:
+        domain = self.pages_data[url]['domain']
+        if domain in seed_domains or "google" in domain or "wikipedia" in domain:
+             self.pages_data[url]['pagerank'] *= 15.0  # Bobot x15 untuk website utama
 
-# --- TANGGUH: SYNC DENGAN RETRY & ABORT SYSTEM ---
+
 def get_already_visited_urls():
   if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
     print('[CRITICAL ERROR] Secrets Cloudflare D1 belum terpasang!')
     sys.exit(1)
 
   url_d1 = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/query'
-  headers = {
-      'Authorization': f'Bearer {CF_API_TOKEN}',
-      'Content-Type': 'application/json',
-  }
+  headers = {'Authorization': f'Bearer {CF_API_TOKEN}', 'Content-Type': 'application/json'}
 
   visited = set()
   limit = 2500
@@ -320,60 +311,44 @@ def get_already_visited_urls():
 
   while True:
     success = False
-
     for attempt in range(max_retries):
       try:
         sql_query = f'SELECT url FROM documents LIMIT {limit} OFFSET {offset}'
-        res = requests.post(
-            url_d1, headers=headers, json={'sql': sql_query}, timeout=30
-        )
-
+        res = requests.post(url_d1, headers=headers, json={'sql': sql_query}, timeout=30)
+        
         if res.status_code == 200:
           data = res.json()
           if data.get('success'):
             results_data = data.get('result', [{}])[0].get('results', [])
-
-            if isinstance(results_data, dict) and 'rows' in results_data:
-                rows = results_data['rows']
-            else:
-                rows = results_data
-
+            rows = results_data['rows'] if isinstance(results_data, dict) and 'rows' in results_data else results_data
+            
             for row in rows:
               if isinstance(row, dict) and 'url' in row:
                 visited.add(row['url'])
               elif isinstance(row, (list, tuple)) and len(row) > 0:
                 visited.add(row[0])
 
-            print(f'[D1 SYNC] Sedang memuat... total terbaca: {len(visited)} URL')
+            print(f'[D1 SYNC] Terbaca: {len(visited)} URL')
             success = True
-
+            
             if len(rows) < limit:
-              print(f'[D1 SYNC DONE] Berhasil memuat total {len(visited)} URL lama!')
+              print(f'[D1 SYNC DONE] Total {len(visited)} URL lama masuk memory!')
               return visited
 
             offset += limit
             break
-
-          else:
-            print(f'[D1 SYNC WARNING] D1 Error: {data.get("errors")}')
-        else:
-          print(f'[D1 SYNC WARNING] HTTP Error {res.status_code}: {res.text}')
-
       except Exception as e:
         print(f'[D1 SYNC WARNING] Error jaringan: {e}')
 
-      print(f'[D1 SYNC] Mencoba ulang ({attempt + 1}/{max_retries}) untuk offset {offset}...')
       time.sleep(3)
 
     if not success:
-      print(f'\n[CRITICAL ERROR] Gagal menarik data dari D1 pada offset {offset}!')
-      print('[CRITICAL ERROR] Crawler DIBATALKAN untuk mencegah duplikasi data dan menghemat kuota GitHub Actions!')
+      print(f'\n[CRITICAL ERROR] Gagal sync D1 di offset {offset}! Mencegah duplikasi...')
       sys.exit(1)
 
   return visited
 
 
-# --- CLOUDFLARE D1 ASYNC BATCH PUSH ---
 async def push_single_page_async(session, url_d1_query, headers, page):
   title = page.get('title', '').replace("'", "''").replace("\n", " ")
   snippet = page.get('snippet', '').replace("'", "''").replace("\n", " ")
@@ -413,56 +388,63 @@ async def push_single_page_async(session, url_d1_query, headers, page):
   body = {"batch": payload}
 
   try:
-    async with session.post(
-        url_d1_query, headers=headers, json=body
-    ) as response:
-
+    async with session.post(url_d1_query, headers=headers, json=body) as response:
       if response.status == 200:
           return True
-
+      
       text = await response.text()
-      print(f'[D1 PUSH ERROR] Gagal push {page_url} -> Status {response.status}: {text[:500]}')
+      # Jika limit harian D1 habis, lempar error spesifik agar tidak membuang kuota Action
+      if "exceeded D1's free tier" in text:
+          raise Exception("LIMIT_REACHED")
+          
+      print(f'[D1 PUSH ERROR] Gagal push {page_url} -> {text[:200]}')
       return False
   except Exception as e:
-    print(f'[D1 PUSH EXCEPTION] Error jaringan saat push {page_url} -> {e}')
-    return False
+      if str(e) == "LIMIT_REACHED":
+          raise e # Lemparkan ke atas
+      return False
 
 
 async def push_to_cloudflare_d1_async(crawled_data):
   if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
-    print('[ERROR] Secrets Cloudflare D1 belum terpasang di GitHub!')
+    print('[ERROR] Secrets Cloudflare D1 belum terpasang!')
     return
 
   url_d1_query = f'https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/query'
-  headers = {
-      'Authorization': f'Bearer {CF_API_TOKEN}',
-      'Content-Type': 'application/json',
-  }
+  headers = {'Authorization': f'Bearer {CF_API_TOKEN}', 'Content-Type': 'application/json'}
 
-  print(
-      f'\n[D1 PUSH] Memulai upload paralel {len(crawled_data)} dokumen baru ke'
-      ' Cloudflare D1...'
-  )
-
-  semaphore = asyncio.Semaphore(25)
+  print(f'\n[D1 PUSH] Memulai upload {len(crawled_data)} dokumen ke D1...')
+  
+  # Turunkan load koneksi ke API D1 biar tidak di-rate-limit
+  semaphore = asyncio.Semaphore(15)
+  success_count = 0
 
   async def sem_push(session, page):
+    nonlocal success_count
     async with semaphore:
-      return await push_single_page_async(session, url_d1_query, headers, page)
+      try:
+          res = await push_single_page_async(session, url_d1_query, headers, page)
+          if res: success_count += 1
+      except Exception as e:
+          if str(e) == "LIMIT_REACHED":
+              print("\n[ALERT] Kuota tulis harian Cloudflare D1 habis (100.000 rows/day). Sisa batch dibatalkan.")
+              # Batalkan paksa sisa tugas
+              for t in asyncio.all_tasks():
+                  t.cancel()
 
-  async with aiohttp.ClientSession() as session:
+  connector = aiohttp.TCPConnector(limit=30)
+  async with aiohttp.ClientSession(connector=connector) as session:
     tasks = [sem_push(session, page) for page in crawled_data]
-    results = await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks, return_exceptions=True)
 
-  success_count = sum(1 for r in results if r)
-  print(
-      f'[D1 FINISH] Selesai! {success_count}/{len(crawled_data)} dokumen baru'
-      ' berhasil ditambahkan ke Cloudflare D1.'
-  )
+  print(f'[D1 FINISH] Selesai! {success_count} dokumen baru berhasil disimpan.')
 
 
 if __name__ == '__main__':
+  # Seed URLs Termasuk Google
   initial_seeds = [
+      'https://www.google.com',
+      'https://www.google.co.id',
       'https://duckduckgo.com',
       'https://www.bing.com',
       'https://www.yahoo.com',
