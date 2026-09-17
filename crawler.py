@@ -45,22 +45,24 @@ class ProfessionalSearchCrawler:
     self.inbound = {}
     self.domain_counts = {}
 
-    # Pengendali Keaktifan Worker (Mencegah Worker Mati Prematur)
     self.active_workers = 0
     self.worker_lock = asyncio.Lock()
 
     self.start_time = time.time()
 
+    # --- [FIX: HEADERS CHROME ANTI-BLOKIR] ---
     self.headers = {
-        'User-Agent': (
-            'Mozilla/5.0 (compatible; DeevvBot/1.2; +https://deevvbot.org/bot)'
-        ),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
     }
 
   def is_spam_domain(self, domain):
-    """Menolak domain spam / TLD gratisan / murah yang sering jadi sarang spider trap."""
     spam_tlds = (
         '.cn', '.xyz', '.top', '.pw', '.tk', '.ml', '.ga', '.cf', '.gq', 
         '.wang', '.icu', '.best', '.monster', '.work', '.click', '.loan'
@@ -68,7 +70,6 @@ class ProfessionalSearchCrawler:
     return any(domain.endswith(tld) for tld in spam_tlds)
 
   def is_spider_trap(self, url):
-    """Mendeteksi URL sampah, looping berulang, dan endpoint non-indeks."""
     parsed = urlparse(url)
     path = parsed.path.lower()
     
@@ -94,7 +95,6 @@ class ProfessionalSearchCrawler:
     return False
 
   def clean_url_string(self, url):
-    """Membuang fragment (#) dan trailing slash."""
     parsed = urlparse(url)
     clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
     if len(clean_url) > len(f"{parsed.scheme}://{parsed.netloc}/") and clean_url.endswith('/'):
@@ -102,7 +102,6 @@ class ProfessionalSearchCrawler:
     return clean_url
 
   async def get_robots_rules(self, session, url):
-    """Membaca robots.txt dan mematuhi Crawl-Delay."""
     parsed = urlparse(url)
     domain_base = f'{parsed.scheme}://{parsed.netloc}'
 
@@ -126,7 +125,6 @@ class ProfessionalSearchCrawler:
     return self.domain_robots[domain_base]
 
   def is_valid_url(self, url):
-    """Validasi URL hanya untuk dokumen HTML dan protocol http/https."""
     parsed = urlparse(url)
     invalid_exts = (
         '.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip', '.rar', '.7z',
@@ -141,14 +139,16 @@ class ProfessionalSearchCrawler:
     return re.sub(r'\s+', ' ', text).strip()
 
   async def fetch(self, session, url):
-    """Mengambil konten HTML dengan timeout 6 detik."""
     try:
-      async with session.get(url, timeout=6, headers=self.headers, allow_redirects=True) as response:
+      async with session.get(url, timeout=8, headers=self.headers, allow_redirects=True) as response:
         content_type = response.headers.get('Content-Type', '').lower()
         if response.status == 200 and 'text/html' in content_type:
           return await response.text()
-        return None
-    except Exception:
+        else:
+          # Log agar kamu tahu situs mana yang memblokir IP Github Actions
+          print(f"[FETCH ERROR] Status {response.status} -> {url}")
+          return None
+    except Exception as e:
       return None
 
   async def process_page(self, url, html):
@@ -158,12 +158,14 @@ class ProfessionalSearchCrawler:
     title_tag = soup.find('title')
     title = self.clean_text(title_tag.get_text()) if title_tag else domain_name
 
+    # --- [FIX: META SNIPPET EXTRACTOR LEBIH KUAT] ---
     snippet = ""
     meta_desc = (
-        soup.find('meta', attrs={'name': lambda x: x and x.lower() == 'description'})
-        or soup.find('meta', attrs={'property': lambda x: x and x.lower() == 'og:description'})
-        or soup.find('meta', attrs={'name': lambda x: x and x.lower() == 'twitter:description'})
+        soup.find('meta', attrs={'name': re.compile(r'^description$', re.I)}) or 
+        soup.find('meta', attrs={'property': re.compile(r'^og:description$', re.I)}) or 
+        soup.find('meta', attrs={'name': re.compile(r'^twitter:description$', re.I)})
     )
+    
     if meta_desc and meta_desc.get('content'):
       cand = self.clean_text(meta_desc['content'])
       if len(cand) > 30:
@@ -203,8 +205,6 @@ class ProfessionalSearchCrawler:
       raw_url = urljoin(url, link['href'])
       parsed_raw = urlparse(raw_url)
 
-      # --- [FIX FILTER PARAMETER ?] ---
-      # Jika URL memiliki parameter query '?' (misal ?q=..., ?id=..., ?ref=...), LANGSUNG SKIP!
       if parsed_raw.query:
         continue
 
@@ -251,7 +251,6 @@ class ProfessionalSearchCrawler:
     self.graph[url] = list(outgoing_links)
 
   async def worker(self, session):
-    """Worker asynchronous dengan proteksi anti-mati prematur."""
     while True:
       if time.time() - self.start_time > self.max_run_seconds:
         break
@@ -259,8 +258,6 @@ class ProfessionalSearchCrawler:
       try:
         priority, url = await asyncio.wait_for(self.queue.get(), timeout=2.0)
       except asyncio.TimeoutError:
-        # --- [FIX WORKER MATI PREMATUR] ---
-        # Worker HANYA berhenti jika waktu habis ATAU queue kosong DAN semua worker lain idle.
         if time.time() - self.start_time > self.max_run_seconds:
           break
         async with self.worker_lock:
@@ -272,6 +269,7 @@ class ProfessionalSearchCrawler:
         self.active_workers += 1
 
       try:
+        # Pengecekan robots.txt tetap ada, tapi menggunakan agen Chrome agar tidak dicurigai
         robots_rules = await self.get_robots_rules(session, url)
         if robots_rules.can_fetch(self.headers['User-Agent'], url):
           crawl_delay = robots_rules.crawl_delay(self.headers['User-Agent'])
@@ -279,7 +277,7 @@ class ProfessionalSearchCrawler:
             await asyncio.sleep(crawl_delay)
 
           elapsed = int(time.time() - self.start_time)
-          if len(self.pages_data) % 25 == 0 and len(self.pages_data) > 0:
+          if len(self.pages_data) % 10 == 0 and len(self.pages_data) > 0:
             print(f'[{elapsed}s/{self.max_run_seconds}s] [{len(self.pages_data)} terindeks] Merayapi: {url}')
 
           html = await self.fetch(session, url)
@@ -398,11 +396,6 @@ def get_already_visited_urls():
 
 
 async def push_to_cloudflare_d1_async(crawled_data, batch_size=50):
-  """
-  --- [FIX TRUE BATCH UPLOAD D1] ---
-  Mengelompokkan 50 dokumen per 1 HTTP Request ke Cloudflare API.
-  Menghemat HTTP Request hingga 50x lipat dan jauh lebih cepat!
-  """
   if not all([CF_ACCOUNT_ID, CF_DATABASE_ID, CF_API_TOKEN]):
     print('[ERROR] Secrets Cloudflare D1 belum terpasang!')
     return
@@ -412,7 +405,6 @@ async def push_to_cloudflare_d1_async(crawled_data, batch_size=50):
 
   print(f'\n[D1 PUSH] Memulai upload {len(crawled_data)} dokumen ke D1 (Group Batching)...')
 
-  # Bagi dokumen menjadi kelompok-kelompok kecil (chunk) berisi 50 item
   chunks = [crawled_data[i:i + batch_size] for i in range(0, len(crawled_data), batch_size)]
   success_count = 0
 
@@ -423,8 +415,8 @@ async def push_to_cloudflare_d1_async(crawled_data, batch_size=50):
       for page in chunk:
         batch_payload.append({
             "sql": """
-                INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, pagerank)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, pagerank, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(url) DO UPDATE SET
                     title=excluded.title,
                     snippet=excluded.snippet,
