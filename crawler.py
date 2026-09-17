@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 import requests
 
 # --- CONFIGURATION ---
-MAX_RUN_SECONDS = 3600  # Maksimal 1 Jam Execution Time
+MAX_RUN_SECONDS = 1200  # Maksimal 1 Jam Execution Time
 CONCURRENCY = 15        # 15 Pekerja simultan
 MAX_URL_LENGTH = 200    # Batas panjang URL untuk cegah spider trap
 MAX_PATH_DEPTH = 6      # Maksimal kedalaman direktori (/a/b/c/d/e/f)
@@ -444,13 +444,27 @@ async def push_to_cloudflare_d1_async(crawled_data, batch_size=50):
             ],
         })
         batch_payload.append({
-            "sql": "DELETE FROM documents_fts WHERE rowid = (SELECT rowid FROM documents WHERE url = ?);",
-            "params": [page['url']],
-        })
-        batch_payload.append({
-            "sql": "INSERT INTO documents_fts(rowid, title, snippet) SELECT rowid, ?, ? FROM documents WHERE url = ?;",
-            "params": [page['title'], page['snippet'], page['url']],
-        })
+    "sql": """
+        INSERT INTO documents
+        (url, domain, title, snippet, favicon, thumbnail, pagerank, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(url) DO UPDATE SET
+            title=excluded.title,
+            snippet=excluded.snippet,
+            favicon=excluded.favicon,
+            thumbnail=excluded.thumbnail,
+            pagerank=excluded.pagerank;
+    """,
+    "params": [
+        page["url"],
+        page["domain"],
+        page["title"],
+        page["snippet"],
+        page["favicon"],
+        page["thumbnail"],
+        page["pagerank"]
+    ]
+})
 
       try:
         async with session.post(url_d1_query, headers=headers, json={"batch": batch_payload}, timeout=30) as resp:
