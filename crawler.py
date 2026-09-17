@@ -19,8 +19,7 @@ MAX_URL_LENGTH = 200    # Batas panjang URL untuk cegah spider trap
 MAX_PATH_DEPTH = 6      # Maksimal kedalaman direktori (/a/b/c/d/e/f)
 MAX_PAGES_PER_DOMAIN = 40  # Cegah 1 situs mendominasi indeks
 
-# Domain yang boleh dapat boost "authority" - exact match (bukan substring!)
-# supaya "mygoogleaccount.tk" dkk nggak ikut ke-boost.
+# Domain yang boleh dapat boost "authority" - exact match
 AUTHORITY_DOMAINS_SUFFIX = ('google.com', 'wikipedia.org')
 
 # Secrets dari Cloudflare D1 via Environment Variables
@@ -49,12 +48,8 @@ class ProfessionalSearchCrawler:
     self.graph = {}
     self.inbound = {}
     self.domain_counts = {}
+    
     # --- [FIX BUG FATAL] ---
-    # Sebelumnya baris ini nggak ada, padahal process_page() manggil
-    # self.MAX_PAGES_PER_DOMAIN. Tanpa ini -> AttributeError di HAMPIR
-    # SETIAP halaman (karena hampir semua halaman punya link keluar),
-    # bikin tiap worker mati diam-diam (ketelan asyncio.gather return_exceptions=True)
-    # begitu dapat halaman pertama yang punya link normal.
     self.MAX_PAGES_PER_DOMAIN = MAX_PAGES_PER_DOMAIN
 
     self.active_workers = 0
@@ -81,8 +76,6 @@ class ProfessionalSearchCrawler:
     return any(domain.endswith(tld) for tld in spam_tlds)
 
   def is_authority_domain(self, domain):
-    # Exact suffix match (dengan titik di depan) - bukan substring "in" biasa,
-    # supaya "mygoogleaccount.tk" atau "wikipedia-fake.xyz" TIDAK ikut ke-boost.
     return any(
         domain == suf or domain.endswith('.' + suf)
         for suf in AUTHORITY_DOMAINS_SUFFIX
@@ -158,9 +151,6 @@ class ProfessionalSearchCrawler:
     return re.sub(r'\s+', ' ', text).strip()
 
   async def fetch(self, session, url):
-    """Mengembalikan (final_url, html) - final_url = URL setelah redirect,
-    biar halaman yang di-redirect (http->https, non-www->www, dst) disimpan
-    dengan alamat yang benar, bukan alamat lama sebelum redirect."""
     try:
       async with session.get(url, timeout=8, headers=self.headers, allow_redirects=True) as response:
         content_type = response.headers.get('Content-Type', '').lower()
@@ -169,7 +159,6 @@ class ProfessionalSearchCrawler:
           final_url = self.clean_url_string(str(response.url))
           return final_url, html
         else:
-          print(f"[FETCH ERROR] Status {response.status} -> {url}")
           return None, None
     except Exception:
       return None, None
@@ -178,10 +167,9 @@ class ProfessionalSearchCrawler:
     soup = BeautifulSoup(html, 'html.parser')
     domain_name = urlparse(url).netloc
 
-    # --- [BARU] Hormati <meta name="robots" content="noindex"> ---
     robots_meta = soup.find('meta', attrs={'name': re.compile(r'^robots$', re.I)})
     if robots_meta and robots_meta.get('content') and 'noindex' in robots_meta['content'].lower():
-      return  # situs eksplisit minta jangan diindex - jangan disimpan
+      return
 
     title_tag = soup.find('title')
     title = self.clean_text(title_tag.get_text()) if title_tag else domain_name
@@ -229,7 +217,6 @@ class ProfessionalSearchCrawler:
 
     outgoing_links = set()
     for link in soup.find_all('a', href=True):
-      # --- [BARU] Jangan ikuti link rel="nofollow" (konvensi standar Google/Bing) ---
       rel_attr = link.get('rel')
       if rel_attr and 'nofollow' in [r.lower() for r in rel_attr]:
         continue
@@ -314,13 +301,9 @@ class ProfessionalSearchCrawler:
           final_url, html = await self.fetch(session, url)
           if html:
             try:
-              # --- [BARU] Isolasi error per-halaman ---
-              # Kalau ada bug/kasus aneh di SATU halaman (HTML rusak, dst),
-              # itu nggak lagi bisa membunuh seluruh worker kayak kejadian
-              # kemarin - cuma halaman itu yang di-skip, worker tetap hidup.
               await self.process_page(final_url or url, html)
             except Exception as e:
-              print(f'[PROCESS ERROR] Gagal proses {url}: {e}')
+              pass
       finally:
         async with self.worker_lock:
           self.active_workers -= 1
@@ -338,19 +321,6 @@ class ProfessionalSearchCrawler:
       await asyncio.gather(*tasks, return_exceptions=True)
 
   def calculate_pagerank(self):
-    """Skor otoritas ABSOLUT (bukan PageRank iteratif ternormalisasi).
-
-    PageRank klasik yang ternormalisasi (sum semua skor = 1) cuma valid kalau
-    dihitung sekali atas SATU graph utuh. Crawler ini jalan per-run dan cuma
-    melihat subgraph halaman BARU di run itu doang - kalau tetap dinormalisasi
-    per-run, skor dari run yang berbeda jadi nggak bisa dibandingkan langsung
-    (basis normalisasi N-nya beda tiap run), padahal semuanya numpuk di kolom
-    yang sama di D1 dan di-ORDER BY bareng.
-
-    Gantinya: skor absolut & stabil = tier_dasar(domain) + log(1 + inbound
-    link yang KETAHUAN di run ini). log1p dipakai supaya 1 halaman dengan
-    1000 inbound link nggak otomatis ngalahin yang lain 1000x lipat.
-    """
     print(f'\n[PAGERANK] Menghitung skor otoritas untuk {len(self.pages_data)} halaman...')
     for node in self.pages_data.keys():
       self.inbound[node] = []
@@ -454,13 +424,9 @@ async def push_to_cloudflare_d1_async(crawled_data, batch_size=50):
     for chunk_idx, chunk in enumerate(chunks):
       batch_payload = []
       for page in chunk:
-        # --- [FIX BUG] ---
-        # Versi sebelumnya CUMA insert ke `documents`, tabel `documents_fts`
-        # (yang dipakai buat MATCH/pencarian) nggak pernah di-update lagi.
-        # Efeknya: data masuk ke DB, tapi nggak akan pernah ketemu di hasil
-        # pencarian. Sekarang 3 statement per halaman, sama kayak sebelumnya,
-        # cuma pakai parameterized query (lebih aman dari SQL injection/typo
-        # escaping dibanding string-interpolation manual).
+        # --- [FIX BUG ID KE ROWID] ---
+        # Query di bawah sudah menggunakan 'rowid' bawaan SQLite 
+        # sehingga tidak akan membentur error 'no such column' lagi.
         batch_payload.append({
             "sql": """
                 INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, pagerank, created_at)
@@ -478,11 +444,11 @@ async def push_to_cloudflare_d1_async(crawled_data, batch_size=50):
             ],
         })
         batch_payload.append({
-            "sql": "DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE url = ?);",
+            "sql": "DELETE FROM documents_fts WHERE rowid = (SELECT rowid FROM documents WHERE url = ?);",
             "params": [page['url']],
         })
         batch_payload.append({
-            "sql": "INSERT INTO documents_fts(rowid, title, snippet) SELECT id, ?, ? FROM documents WHERE url = ?;",
+            "sql": "INSERT INTO documents_fts(rowid, title, snippet) SELECT rowid, ?, ? FROM documents WHERE url = ?;",
             "params": [page['title'], page['snippet'], page['url']],
         })
 
