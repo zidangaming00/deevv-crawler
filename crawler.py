@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import re
 import sys
@@ -17,6 +18,10 @@ CONCURRENCY = 15        # 15 Pekerja simultan
 MAX_URL_LENGTH = 200    # Batas panjang URL untuk cegah spider trap
 MAX_PATH_DEPTH = 6      # Maksimal kedalaman direktori (/a/b/c/d/e/f)
 MAX_PAGES_PER_DOMAIN = 40  # Cegah 1 situs mendominasi indeks
+
+# Domain yang boleh dapat boost "authority" - exact match (bukan substring!)
+# supaya "mygoogleaccount.tk" dkk nggak ikut ke-boost.
+AUTHORITY_DOMAINS_SUFFIX = ('google.com', 'wikipedia.org')
 
 # Secrets dari Cloudflare D1 via Environment Variables
 CF_ACCOUNT_ID = os.getenv('CF_ACCOUNT_ID')
@@ -44,13 +49,19 @@ class ProfessionalSearchCrawler:
     self.graph = {}
     self.inbound = {}
     self.domain_counts = {}
+    # --- [FIX BUG FATAL] ---
+    # Sebelumnya baris ini nggak ada, padahal process_page() manggil
+    # self.MAX_PAGES_PER_DOMAIN. Tanpa ini -> AttributeError di HAMPIR
+    # SETIAP halaman (karena hampir semua halaman punya link keluar),
+    # bikin tiap worker mati diam-diam (ketelan asyncio.gather return_exceptions=True)
+    # begitu dapat halaman pertama yang punya link normal.
+    self.MAX_PAGES_PER_DOMAIN = MAX_PAGES_PER_DOMAIN
 
     self.active_workers = 0
     self.worker_lock = asyncio.Lock()
 
     self.start_time = time.time()
 
-    # --- [FIX: HEADERS CHROME ANTI-BLOKIR] ---
     self.headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -64,15 +75,23 @@ class ProfessionalSearchCrawler:
 
   def is_spam_domain(self, domain):
     spam_tlds = (
-        '.cn', '.xyz', '.top', '.pw', '.tk', '.ml', '.ga', '.cf', '.gq', 
+        '.cn', '.xyz', '.top', '.pw', '.tk', '.ml', '.ga', '.cf', '.gq',
         '.wang', '.icu', '.best', '.monster', '.work', '.click', '.loan'
     )
     return any(domain.endswith(tld) for tld in spam_tlds)
 
+  def is_authority_domain(self, domain):
+    # Exact suffix match (dengan titik di depan) - bukan substring "in" biasa,
+    # supaya "mygoogleaccount.tk" atau "wikipedia-fake.xyz" TIDAK ikut ke-boost.
+    return any(
+        domain == suf or domain.endswith('.' + suf)
+        for suf in AUTHORITY_DOMAINS_SUFFIX
+    )
+
   def is_spider_trap(self, url):
     parsed = urlparse(url)
     path = parsed.path.lower()
-    
+
     if len(url) > MAX_URL_LENGTH:
       return True
 
@@ -139,33 +158,41 @@ class ProfessionalSearchCrawler:
     return re.sub(r'\s+', ' ', text).strip()
 
   async def fetch(self, session, url):
+    """Mengembalikan (final_url, html) - final_url = URL setelah redirect,
+    biar halaman yang di-redirect (http->https, non-www->www, dst) disimpan
+    dengan alamat yang benar, bukan alamat lama sebelum redirect."""
     try:
       async with session.get(url, timeout=8, headers=self.headers, allow_redirects=True) as response:
         content_type = response.headers.get('Content-Type', '').lower()
         if response.status == 200 and 'text/html' in content_type:
-          return await response.text()
+          html = await response.text()
+          final_url = self.clean_url_string(str(response.url))
+          return final_url, html
         else:
-          # Log agar kamu tahu situs mana yang memblokir IP Github Actions
           print(f"[FETCH ERROR] Status {response.status} -> {url}")
-          return None
-    except Exception as e:
-      return None
+          return None, None
+    except Exception:
+      return None, None
 
   async def process_page(self, url, html):
     soup = BeautifulSoup(html, 'html.parser')
     domain_name = urlparse(url).netloc
 
+    # --- [BARU] Hormati <meta name="robots" content="noindex"> ---
+    robots_meta = soup.find('meta', attrs={'name': re.compile(r'^robots$', re.I)})
+    if robots_meta and robots_meta.get('content') and 'noindex' in robots_meta['content'].lower():
+      return  # situs eksplisit minta jangan diindex - jangan disimpan
+
     title_tag = soup.find('title')
     title = self.clean_text(title_tag.get_text()) if title_tag else domain_name
 
-    # --- [FIX: META SNIPPET EXTRACTOR LEBIH KUAT] ---
     snippet = ""
     meta_desc = (
-        soup.find('meta', attrs={'name': re.compile(r'^description$', re.I)}) or 
-        soup.find('meta', attrs={'property': re.compile(r'^og:description$', re.I)}) or 
+        soup.find('meta', attrs={'name': re.compile(r'^description$', re.I)}) or
+        soup.find('meta', attrs={'property': re.compile(r'^og:description$', re.I)}) or
         soup.find('meta', attrs={'name': re.compile(r'^twitter:description$', re.I)})
     )
-    
+
     if meta_desc and meta_desc.get('content'):
       cand = self.clean_text(meta_desc['content'])
       if len(cand) > 30:
@@ -202,6 +229,11 @@ class ProfessionalSearchCrawler:
 
     outgoing_links = set()
     for link in soup.find_all('a', href=True):
+      # --- [BARU] Jangan ikuti link rel="nofollow" (konvensi standar Google/Bing) ---
+      rel_attr = link.get('rel')
+      if rel_attr and 'nofollow' in [r.lower() for r in rel_attr]:
+        continue
+
       raw_url = urljoin(url, link['href'])
       parsed_raw = urlparse(raw_url)
 
@@ -269,7 +301,6 @@ class ProfessionalSearchCrawler:
         self.active_workers += 1
 
       try:
-        # Pengecekan robots.txt tetap ada, tapi menggunakan agen Chrome agar tidak dicurigai
         robots_rules = await self.get_robots_rules(session, url)
         if robots_rules.can_fetch(self.headers['User-Agent'], url):
           crawl_delay = robots_rules.crawl_delay(self.headers['User-Agent'])
@@ -280,9 +311,16 @@ class ProfessionalSearchCrawler:
           if len(self.pages_data) % 10 == 0 and len(self.pages_data) > 0:
             print(f'[{elapsed}s/{self.max_run_seconds}s] [{len(self.pages_data)} terindeks] Merayapi: {url}')
 
-          html = await self.fetch(session, url)
+          final_url, html = await self.fetch(session, url)
           if html:
-            await self.process_page(url, html)
+            try:
+              # --- [BARU] Isolasi error per-halaman ---
+              # Kalau ada bug/kasus aneh di SATU halaman (HTML rusak, dst),
+              # itu nggak lagi bisa membunuh seluruh worker kayak kejadian
+              # kemarin - cuma halaman itu yang di-skip, worker tetap hidup.
+              await self.process_page(final_url or url, html)
+            except Exception as e:
+              print(f'[PROCESS ERROR] Gagal proses {url}: {e}')
       finally:
         async with self.worker_lock:
           self.active_workers -= 1
@@ -299,8 +337,21 @@ class ProfessionalSearchCrawler:
       tasks = [asyncio.create_task(self.worker(session)) for _ in range(self.concurrency)]
       await asyncio.gather(*tasks, return_exceptions=True)
 
-  def calculate_pagerank(self, damping_factor=0.85, iterations=15):
-    print(f'\n[PAGERANK] Menghitung PageRank untuk {len(self.pages_data)} halaman...')
+  def calculate_pagerank(self):
+    """Skor otoritas ABSOLUT (bukan PageRank iteratif ternormalisasi).
+
+    PageRank klasik yang ternormalisasi (sum semua skor = 1) cuma valid kalau
+    dihitung sekali atas SATU graph utuh. Crawler ini jalan per-run dan cuma
+    melihat subgraph halaman BARU di run itu doang - kalau tetap dinormalisasi
+    per-run, skor dari run yang berbeda jadi nggak bisa dibandingkan langsung
+    (basis normalisasi N-nya beda tiap run), padahal semuanya numpuk di kolom
+    yang sama di D1 dan di-ORDER BY bareng.
+
+    Gantinya: skor absolut & stabil = tier_dasar(domain) + log(1 + inbound
+    link yang KETAHUAN di run ini). log1p dipakai supaya 1 halaman dengan
+    1000 inbound link nggak otomatis ngalahin yang lain 1000x lipat.
+    """
+    print(f'\n[PAGERANK] Menghitung skor otoritas untuk {len(self.pages_data)} halaman...')
     for node in self.pages_data.keys():
       self.inbound[node] = []
 
@@ -309,30 +360,20 @@ class ProfessionalSearchCrawler:
         if target in self.inbound:
           self.inbound[target].append(source)
 
-    N = len(self.pages_data)
-    if N == 0:
-      return
-
-    initial_pr = 1.0 / N
-    for url in self.pages_data:
-      self.pages_data[url]['pagerank'] = initial_pr
-
-    for _ in range(iterations):
-      new_pr = {}
-      for url in self.pages_data:
-        rank_sum = sum(
-            (self.pages_data[in_node]['pagerank'] / max(len(self.graph.get(in_node, [])), 1))
-            for in_node in self.inbound.get(url, []) if in_node in self.pages_data
-        )
-        new_pr[url] = ((1 - damping_factor) / N) + (damping_factor * rank_sum)
-      for url in new_pr:
-        self.pages_data[url]['pagerank'] = new_pr[url]
-
     seed_domains = {urlparse(seed).netloc for seed in self.seed_urls}
-    for url in self.pages_data:
-      domain = self.pages_data[url]['domain']
-      if domain in seed_domains or "google" in domain or "wikipedia" in domain:
-        self.pages_data[url]['pagerank'] *= 15.0
+
+    for url, page in self.pages_data.items():
+      domain = page['domain']
+      in_degree = len(self.inbound.get(url, []))
+
+      if self.is_authority_domain(domain):
+        tier_base = 3.0
+      elif domain in seed_domains:
+        tier_base = 1.5
+      else:
+        tier_base = 0.1
+
+      page['pagerank'] = tier_base + math.log1p(in_degree)
 
 
 def get_already_visited_urls():
@@ -413,6 +454,13 @@ async def push_to_cloudflare_d1_async(crawled_data, batch_size=50):
     for chunk_idx, chunk in enumerate(chunks):
       batch_payload = []
       for page in chunk:
+        # --- [FIX BUG] ---
+        # Versi sebelumnya CUMA insert ke `documents`, tabel `documents_fts`
+        # (yang dipakai buat MATCH/pencarian) nggak pernah di-update lagi.
+        # Efeknya: data masuk ke DB, tapi nggak akan pernah ketemu di hasil
+        # pencarian. Sekarang 3 statement per halaman, sama kayak sebelumnya,
+        # cuma pakai parameterized query (lebih aman dari SQL injection/typo
+        # escaping dibanding string-interpolation manual).
         batch_payload.append({
             "sql": """
                 INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, pagerank, created_at)
@@ -425,14 +473,17 @@ async def push_to_cloudflare_d1_async(crawled_data, batch_size=50):
                     pagerank=excluded.pagerank;
             """,
             "params": [
-                page['url'],
-                page['domain'],
-                page['title'],
-                page['snippet'],
-                page['favicon'],
-                page['thumbnail'],
-                page['pagerank'],
+                page['url'], page['domain'], page['title'], page['snippet'],
+                page['favicon'], page['thumbnail'], page['pagerank'],
             ],
+        })
+        batch_payload.append({
+            "sql": "DELETE FROM documents_fts WHERE rowid = (SELECT id FROM documents WHERE url = ?);",
+            "params": [page['url']],
+        })
+        batch_payload.append({
+            "sql": "INSERT INTO documents_fts(rowid, title, snippet) SELECT id, ?, ? FROM documents WHERE url = ?;",
+            "params": [page['title'], page['snippet'], page['url']],
         })
 
       try:
