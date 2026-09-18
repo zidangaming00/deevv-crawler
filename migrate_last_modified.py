@@ -36,7 +36,7 @@ async def main():
     client = libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
     
     print("Mencari URL yang belum memiliki last_modified...")
-    result = client.execute("SELECT url FROM documents WHERE last_modified IS NULL LIMIT 18000")
+    result = client.execute("SELECT url FROM documents WHERE last_modified IS NULL LIMIT 30440")
     urls = [row[0] for row in result.rows]
     print(f"Ditemukan {len(urls)} target. Memulai sinkronisasi cepat...")
 
