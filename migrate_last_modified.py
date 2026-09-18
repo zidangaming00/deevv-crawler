@@ -13,11 +13,11 @@ TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 
 CONCURRENT_REQUESTS = 50
 BATCH_SIZE = 100
-TIMEOUT_SECONDS = 12
+TIMEOUT_SECONDS = 8
 
 
 # ============================================================
-# FETCH + DETEKSI LAST MODIFIED
+# FETCH DAN DETEKSI LAST MODIFIED
 # ============================================================
 
 async def fetch_last_modified(session, url):
@@ -30,8 +30,10 @@ async def fetch_last_modified(session, url):
         # 1. HTTP Last-Modified
         #
         # PENTING:
-        # HANYA Last-Modified.
-        # HTTP Date TIDAK PERNAH DIGUNAKAN.
+        # HANYA Last-Modified yang digunakan.
+        #
+        # HTTP Date SENGAJA TIDAK DIGUNAKAN karena itu adalah
+        # waktu response server, bukan waktu halaman diperbarui.
         # ====================================================
 
         async with session.head(
@@ -46,12 +48,12 @@ async def fetch_last_modified(session, url):
             if last_modified:
                 return {
                     "url": url,
-                    "value": last_modified,
+                    "value": last_modified.strip(),
                     "source": "http_last_modified"
                 }
 
         # ====================================================
-        # 2. GET halaman untuk membaca metadata
+        # 2. GET halaman
         # ====================================================
 
         async with session.get(
@@ -73,9 +75,7 @@ async def fetch_last_modified(session, url):
         soup = BeautifulSoup(html, "html.parser")
 
         # ====================================================
-        # 2A. JSON-LD dateModified
-        #
-        # Ini diprioritaskan sebelum meta biasa.
+        # 3. JSON-LD dateModified
         # ====================================================
 
         jsonld_dates = []
@@ -97,13 +97,11 @@ async def fetch_last_modified(session, url):
             def collect_date_modified(obj):
                 if isinstance(obj, dict):
 
-                    # dateModified secara eksplisit
                     value = obj.get("dateModified")
 
                     if isinstance(value, str) and value.strip():
                         jsonld_dates.append(value.strip())
 
-                    # @graph
                     graph = obj.get("@graph")
 
                     if isinstance(graph, list):
@@ -111,6 +109,7 @@ async def fetch_last_modified(session, url):
                             collect_date_modified(item)
 
                 elif isinstance(obj, list):
+
                     for item in obj:
                         collect_date_modified(item)
 
@@ -124,7 +123,7 @@ async def fetch_last_modified(session, url):
             }
 
         # ====================================================
-        # 2B. article:modified_time
+        # 4. article:modified_time
         # ====================================================
 
         meta = soup.find(
@@ -135,6 +134,7 @@ async def fetch_last_modified(session, url):
         )
 
         if meta and meta.get("content"):
+
             return {
                 "url": url,
                 "value": meta["content"].strip(),
@@ -142,10 +142,8 @@ async def fetch_last_modified(session, url):
             }
 
         # ====================================================
-        # 2C. Meta last-modified
-        #
-        # Hanya nama yang secara eksplisit menunjukkan
-        # last modified.
+        # 5. Meta name yang secara eksplisit menyatakan
+        #    modified / last modified
         # ====================================================
 
         modified_meta_names = [
@@ -169,19 +167,26 @@ async def fetch_last_modified(session, url):
             )
 
             if meta and meta.get("content"):
+
                 return {
                     "url": url,
                     "value": meta["content"].strip(),
                     "source": f"meta_name_{name}"
                 }
 
-        # Coba juga property versi non-standard
-        for prop in [
+        # ====================================================
+        # 6. Meta property yang secara eksplisit menyatakan
+        #    modified
+        # ====================================================
+
+        modified_meta_properties = [
             "last-modified",
             "lastmodified",
             "dateModified",
             "dateModifiedTime"
-        ]:
+        ]
+
+        for prop in modified_meta_properties:
 
             meta = soup.find(
                 "meta",
@@ -191,6 +196,7 @@ async def fetch_last_modified(session, url):
             )
 
             if meta and meta.get("content"):
+
                 return {
                     "url": url,
                     "value": meta["content"].strip(),
@@ -198,14 +204,24 @@ async def fetch_last_modified(session, url):
                 }
 
         # ====================================================
-        # 3. <time datetime="">
+        # 7. <time datetime="">
         #
-        # HANYA digunakan kalau elemen tersebut secara jelas
-        # menandakan modified/update time.
-        #
-        # Kita TIDAK mengambil sembarang <time>, karena itu
-        # bisa saja tanggal publish.
+        # Hanya digunakan jika konteksnya jelas menunjukkan
+        # updated / modified.
         # ====================================================
+
+        modified_keywords = [
+            "updated",
+            "update",
+            "modified",
+            "modification",
+            "last modified",
+            "last updated",
+            "diperbarui",
+            "diperbaharui",
+            "diubah",
+            "terakhir diperbarui"
+        ]
 
         for time_tag in soup.find_all("time"):
 
@@ -226,30 +242,23 @@ async def fetch_last_modified(session, url):
             parent_text = ""
 
             if time_tag.parent:
+
                 parent_text = time_tag.parent.get_text(
                     " ",
                     strip=True
                 ).lower()[:300]
 
-            context = f"{text} {classes} {parent_text}"
-
-            modified_keywords = [
-                "updated",
-                "update",
-                "modified",
-                "modification",
-                "last modified",
-                "last updated",
-                "diperbarui",
-                "diperbaharui",
-                "diubah",
-                "terakhir diperbarui"
-            ]
+            context = (
+                f"{text} "
+                f"{classes} "
+                f"{parent_text}"
+            )
 
             if any(
                 keyword in context
                 for keyword in modified_keywords
             ):
+
                 return {
                     "url": url,
                     "value": datetime_value.strip(),
@@ -272,13 +281,15 @@ async def fetch_last_modified(session, url):
         }
 
     except asyncio.TimeoutError:
+
         return {
             "url": url,
             "value": None,
             "source": "timeout"
         }
 
-    except aiohttp.ClientError as e:
+    except aiohttp.ClientError:
+
         return {
             "url": url,
             "value": None,
@@ -286,6 +297,7 @@ async def fetch_last_modified(session, url):
         }
 
     except Exception:
+
         return {
             "url": url,
             "value": None,
@@ -300,6 +312,7 @@ async def fetch_last_modified(session, url):
 async def main():
 
     if not TURSO_URL or not TURSO_TOKEN:
+
         print("Error: Kredensial Turso tidak ditemukan!")
         return
 
@@ -342,8 +355,6 @@ async def main():
         total=TIMEOUT_SECONDS
     )
 
-    results = []
-
     async with aiohttp.ClientSession(
         connector=connector,
         timeout=timeout
@@ -354,7 +365,9 @@ async def main():
         )
 
         async def worker(url):
+
             async with semaphore:
+
                 return await fetch_last_modified(
                     session,
                     url
@@ -378,6 +391,25 @@ async def main():
         for item in results
     )
 
+    # Gabungkan semua sumber META
+    meta_count = 0
+
+    for source, count in stats.items():
+
+        if (
+            source.startswith("meta_name_")
+            or
+            source.startswith("meta_property_")
+        ):
+            meta_count += count
+
+    http_error_count = 0
+
+    for source, count in stats.items():
+
+        if source.startswith("http_status_"):
+            http_error_count += count
+
     print()
     print("========================================")
     print("HASIL PEMERIKSAAN")
@@ -393,19 +425,13 @@ async def main():
     )
 
     print(
-        f"JSON-LD dateModified : "
+        f"JSON-LD dateModified: "
         f"{stats['jsonld_date_modified']}"
     )
 
     print(
         f"Meta modified       : "
-        f"{stats['meta_article_modified_time']}"
-        + sum(
-            count
-            for source, count in stats.items()
-            if source.startswith("meta_name_")
-            or source.startswith("meta_property_")
-        ).__str__()
+        f"{stats['meta_article_modified_time'] + meta_count}"
     )
 
     print(
@@ -430,11 +456,7 @@ async def main():
 
     print(
         f"HTTP error          : "
-        f"{sum(
-            count
-            for source, count in stats.items()
-            if source.startswith('http_status_')
-        )}"
+        f"{http_error_count}"
     )
 
     print(
@@ -478,6 +500,7 @@ async def main():
     )
 
     if not updates:
+
         print(
             "Tidak ada last_modified baru "
             "yang perlu disimpan."
@@ -499,6 +522,10 @@ async def main():
             i:i + BATCH_SIZE
         ]
 
+        batch_number = (
+            i // BATCH_SIZE
+        ) + 1
+
         try:
 
             client.batch(batch)
@@ -506,7 +533,7 @@ async def main():
             success_batches += 1
 
             print(
-                f"Batch {success_batches} berhasil "
+                f"Batch {batch_number} berhasil "
                 f"({len(batch)} update)"
             )
 
@@ -515,8 +542,7 @@ async def main():
             failed_batches += 1
 
             print(
-                f"Batch {success_batches + failed_batches} "
-                f"GAGAL: {e}"
+                f"Batch {batch_number} GAGAL: {e}"
             )
 
     print()
@@ -541,10 +567,13 @@ async def main():
     )
 
     if failed_batches == 0:
+
         print(
             "Semua update berhasil disimpan ke Turso."
         )
+
     else:
+
         print(
             "Ada batch yang gagal disimpan."
         )
