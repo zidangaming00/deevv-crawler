@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import time
+import hashlib
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
@@ -18,17 +19,17 @@ MAX_PATH_DEPTH = 6
 MAX_PAGES_PER_DOMAIN = 40  
 
 # Secrets dari Cloudflare via Environment Variables GitHub
-CF_ACCOUNT_ID = os.getenv('CLOUDFLARE_ACCOUNT_ID')
-CF_DATABASE_ID = os.getenv('CLOUDFLARE_DATABASE_ID')
-CF_API_TOKEN = os.getenv('CLOUDFLARE_API_TOKEN')
+CF_ACCOUNT_ID = os.getenv('CF_ACCOUNT_ID')
+CF_D1_DATABASE_ID = os.getenv('CF_D1_DATABASE_ID')
+CF_API_TOKEN = os.getenv('CF_API_TOKEN')
 
 def execute_d1_queries(queries):
     """Fungsi helper untuk mengeksekusi query ke Cloudflare D1 via REST API"""
-    if not CF_ACCOUNT_ID or not CF_DATABASE_ID or not CF_API_TOKEN:
+    if not CF_ACCOUNT_ID or not CF_D1_DATABASE_ID or not CF_API_TOKEN:
         print('[CRITICAL ERROR] Kredensial Cloudflare D1 tidak lengkap di GitHub Secrets!')
         sys.exit(1)
 
-    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/query"
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DATABASE_ID}/query"
     headers = {
         "Authorization": f"Bearer {CF_API_TOKEN}",
         "Content-Type": "application/json"
@@ -142,11 +143,16 @@ class ProfessionalSearchCrawler:
         if robots_meta and robots_meta.get('content') and 'noindex' in robots_meta['content'].lower():
             return
 
+        # --- Deteksi Bahasa ---
+        html_tag = soup.find('html')
+        language = html_tag.get('lang') if html_tag and html_tag.get('lang') else 'id'
+        language = language.split('-')[0].lower()[:5]
+
         title_tag = soup.find('title')
         title = self.clean_text(title_tag.get_text()) if title_tag else domain_name
 
         snippet = ""
-        meta_desc = soup.find('meta', attrs={'name': re.compile(r'^description$', re.I)}) or soup.find('meta', attrs={'property': re.compile(r'^og:description$', re.I)}) or soup.find('meta', attrs={'name': re.compile(r'^twitter:description$', re.I)})
+        meta_desc = soup.find('meta', attrs={'name': re.compile(r'^description$', re.I)}) or soup.find('meta', attrs={'property': re.compile(r'^og:description$', re.I)})
         if meta_desc and meta_desc.get('content'):
             cand = self.clean_text(meta_desc['content'])
             if len(cand) > 30: snippet = cand
@@ -167,13 +173,15 @@ class ProfessionalSearchCrawler:
 
         if not snippet: snippet = title
 
+        # --- Generate MD5 Content Hash ---
+        content_hash = hashlib.md5((title + snippet).encode('utf-8')).hexdigest()
+
         icon_tag = soup.find('link', rel=lambda r: r and ('icon' in r.lower()))
         favicon = urljoin(url, icon_tag['href']) if (icon_tag and icon_tag.get('href')) else f'https://www.google.com/s2/favicons?domain={domain_name}&sz=64'
 
         og_image = soup.find('meta', attrs={'property': lambda x: x and x.lower() == 'og:image'})
         thumbnail = urljoin(url, og_image['content']) if (og_image and og_image.get('content')) else ''
 
-        # Ekstrak last_modified dari meta property jika header kosong
         last_modified = last_mod_header
         if not last_modified:
             meta_mod = soup.find('meta', attrs={'property': lambda x: x and 'modified_time' in x.lower()}) or soup.find('meta', attrs={'property': lambda x: x and 'published_time' in x.lower()})
@@ -220,7 +228,9 @@ class ProfessionalSearchCrawler:
             'snippet': snippet,
             'favicon': favicon,
             'thumbnail': thumbnail,
-            'last_modified': last_modified
+            'last_modified': last_modified,
+            'content_hash': content_hash,
+            'language': language
         }
         self.graph[url] = list(outgoing_links)
 
@@ -271,6 +281,7 @@ class ProfessionalSearchCrawler:
             await asyncio.gather(*tasks, return_exceptions=True)
 
 def get_already_visited_urls_d1():
+    """Mengambil daftar URL yang sudah pernah dicrawl dari D1 agar tidak merayapi dari nol."""
     visited = set()
     print('\n[CLOUDFLARE SYNC] Mengambil daftar URL lama dari D1...')
     
@@ -307,16 +318,22 @@ def push_to_d1(crawled_data, graph_data, batch_size=50):
         for page in chunk:
             queries.append({
                 "sql": """
-                    INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, created_at, last_modified)
-                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                    INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, created_at, last_modified, content_hash, language)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
                     ON CONFLICT(url) DO UPDATE SET
                         title=excluded.title,
                         snippet=excluded.snippet,
                         favicon=excluded.favicon,
                         thumbnail=excluded.thumbnail,
-                        last_modified=COALESCE(excluded.last_modified, documents.last_modified);
+                        language=excluded.language,
+                        last_modified=CASE 
+                            WHEN excluded.content_hash != documents.content_hash THEN CURRENT_TIMESTAMP
+                            ELSE COALESCE(excluded.last_modified, documents.last_modified)
+                        END,
+                        content_hash=excluded.content_hash;
                 """,
-                "params": [page['url'], page['domain'], page['title'], page['snippet'], page['favicon'], page['thumbnail'], page.get('last_modified')]
+                "params": [page['url'], page['domain'], page['title'], page['snippet'], page['favicon'], 
+                           page['thumbnail'], page.get('last_modified'), page['content_hash'], page['language']]
             })
         
         try:
@@ -353,6 +370,7 @@ def push_to_d1(crawled_data, graph_data, batch_size=50):
     print(f'[CLOUDFLARE FINISH] Selesai! {success_docs} dokumen dan relasinya berhasil disimpan di D1.')
 
 if __name__ == '__main__':
+    # Full Seed URLs dikembalikan
     initial_seeds = [
         'https://www.google.com', 'https://www.google.co.id', 'https://duckduckgo.com', 'https://www.bing.com', 
         'https://id.wikipedia.org', 'https://en.wikipedia.org', 'https://www.kompas.com', 'https://www.detik.com',
