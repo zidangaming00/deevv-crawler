@@ -16,36 +16,33 @@ from bs4 import BeautifulSoup
 # CONFIGURATION
 # ============================================================
 
-# Maksimal waktu crawling: 1 JAM
 MAX_RUN_SECONDS = 3600
 
-# Jumlah worker crawler secara bersamaan
 CONCURRENCY = 15
 
-# Batas URL
 MAX_URL_LENGTH = 200
-
-# Maksimal kedalaman path URL
 MAX_PATH_DEPTH = 6
-
-# Maksimal halaman yang dicrawl dari satu domain
 MAX_PAGES_PER_DOMAIN = 40
 
-# Ukuran batch upload dokumen ke D1
+# Jumlah SQL statement dalam SATU request D1.
+# Ini bukan batas jumlah data yang bisa disimpan.
 D1_BATCH_SIZE = 50
 
-# Ukuran batch graph ke D1
-D1_GRAPH_BATCH_SIZE = 100
+D1_REQUEST_TIMEOUT = 30
+D1_RETRY_COUNT = 3
 
-# Timeout HTTP
 HTTP_TIMEOUT = 8
-
-# Timeout robots.txt
 ROBOTS_TIMEOUT = 4
+
+USER_AGENT = (
+    "Mozilla/5.0 "
+    "(compatible; DeevvBot/1.0; "
+    "+https://deevv.pages.dev)"
+)
 
 
 # ============================================================
-# CLOUDFLARE ENVIRONMENT VARIABLES
+# CLOUDFLARE ENV
 # ============================================================
 
 CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID")
@@ -54,189 +51,843 @@ CF_API_TOKEN = os.getenv("CF_API_TOKEN")
 
 
 # ============================================================
-# CLOUDFLARE D1 API
+# GLOBAL STATE
 # ============================================================
 
-def execute_d1_queries(queries):
-    """
-    Menjalankan query Cloudflare D1 melalui REST API.
+START_TIME = time.monotonic()
 
-    PENTING:
-    Endpoint Cloudflare D1 /query membutuhkan object:
+visited_urls = set()
+queued_urls = set()
 
-        {
-            "queries": [...]
-        }
+domain_page_count = {}
 
-    BUKAN:
+documents = []
+graph_edges = []
 
-        [...]
-    """
+robots_cache = {}
 
-    if not CF_ACCOUNT_ID:
-        print("[CRITICAL ERROR] CF_ACCOUNT_ID tidak tersedia!")
-        return {
-            "success": False,
-            "errors": [
-                {
-                    "message": "CF_ACCOUNT_ID tidak tersedia"
-                }
-            ]
-        }
+stats = {
+    "crawled": 0,
+    "saved": 0,
+    "skipped": 0,
+    "errors": 0,
+    "graph": 0,
+}
 
-    if not CF_D1_DATABASE_ID:
-        print("[CRITICAL ERROR] CF_D1_DATABASE_ID tidak tersedia!")
-        return {
-            "success": False,
-            "errors": [
-                {
-                    "message": "CF_D1_DATABASE_ID tidak tersedia"
-                }
-            ]
-        }
 
-    if not CF_API_TOKEN:
-        print("[CRITICAL ERROR] CF_API_TOKEN tidak tersedia!")
-        return {
-            "success": False,
-            "errors": [
-                {
-                    "message": "CF_API_TOKEN tidak tersedia"
-                }
-            ]
-        }
+# ============================================================
+# TIME CONTROL
+# ============================================================
 
-    if not isinstance(queries, list):
-        print("[D1 ERROR] queries harus berupa list.")
-        return {
-            "success": False,
-            "errors": [
-                {
-                    "message": "queries harus berupa list"
-                }
-            ]
-        }
+def time_exceeded():
+    return (
+        time.monotonic() - START_TIME
+    ) >= MAX_RUN_SECONDS
 
-    if not queries:
-        return {
-            "success": True,
-            "result": []
-        }
 
-    url = (
-        f"https://api.cloudflare.com/client/v4/"
+def elapsed_seconds():
+    return int(time.monotonic() - START_TIME)
+
+
+# ============================================================
+# D1 API
+# ============================================================
+
+def get_d1_api_url():
+    return (
+        "https://api.cloudflare.com/client/v4/"
         f"accounts/{CF_ACCOUNT_ID}/"
         f"d1/database/{CF_D1_DATABASE_ID}/query"
     )
 
+
+def d1_request(batch):
+    """
+    Kirim batch SQL ke Cloudflare D1.
+
+    Format API yang benar:
+
+    {
+        "batch": [
+            {
+                "sql": "...",
+                "params": [...]
+            }
+        ]
+    }
+
+    Tidak ada request test tambahan.
+    """
+
+    if not CF_ACCOUNT_ID:
+        raise RuntimeError("CF_ACCOUNT_ID tidak tersedia")
+
+    if not CF_D1_DATABASE_ID:
+        raise RuntimeError("CF_D1_DATABASE_ID tidak tersedia")
+
+    if not CF_API_TOKEN:
+        raise RuntimeError("CF_API_TOKEN tidak tersedia")
+
+    url = get_d1_api_url()
+
     headers = {
         "Authorization": f"Bearer {CF_API_TOKEN}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
-
-    # ========================================================
-    # INI PERBAIKAN UTAMA
-    #
-    # SALAH:
-    # json=queries
-    #
-    # BENAR:
-    # json={"queries": queries}
-    # ========================================================
 
     payload = {
-        "queries": queries
+        "batch": batch
     }
 
-    try:
-        response = requests.post(
-            url,
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
+    last_error = None
 
-    except requests.exceptions.Timeout:
-        print("[ERROR D1 API] Request timeout.")
-        return {
-            "success": False,
-            "errors": [
-                {
-                    "message": "Cloudflare D1 API request timeout"
-                }
-            ]
-        }
-
-    except requests.exceptions.RequestException as e:
-        print(f"[ERROR D1 API] Request exception: {e}")
-        return {
-            "success": False,
-            "errors": [
-                {
-                    "message": str(e)
-                }
-            ]
-        }
-
-    # ========================================================
-    # HTTP ERROR
-    # ========================================================
-
-    if response.status_code != 200:
-        print(
-            f"[ERROR D1 API] HTTP {response.status_code}: "
-            f"{response.text[:2000]}"
-        )
+    for attempt in range(1, D1_RETRY_COUNT + 1):
 
         try:
-            return response.json()
-        except ValueError:
-            return {
-                "success": False,
-                "errors": [
-                    {
-                        "message": (
-                            f"HTTP {response.status_code}: "
-                            f"{response.text[:1000]}"
-                        )
-                    }
-                ]
-            }
 
-    # ========================================================
-    # PARSE JSON
-    # ========================================================
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=D1_REQUEST_TIMEOUT,
+            )
+
+            try:
+                data = response.json()
+            except Exception:
+                data = {
+                    "success": False,
+                    "errors": [
+                        {
+                            "message": response.text[:1000]
+                        }
+                    ],
+                }
+
+            if response.status_code != 200:
+
+                last_error = (
+                    f"HTTP {response.status_code}: "
+                    f"{data}"
+                )
+
+                print(
+                    f"[D1 ERROR] Attempt "
+                    f"{attempt}/{D1_RETRY_COUNT}: "
+                    f"{last_error}"
+                )
+
+                if attempt < D1_RETRY_COUNT:
+                    time.sleep(min(2 * attempt, 5))
+
+                continue
+
+            if not data.get("success", False):
+
+                last_error = str(data.get("errors"))
+
+                print(
+                    f"[D1 ERROR] Attempt "
+                    f"{attempt}/{D1_RETRY_COUNT}: "
+                    f"{last_error}"
+                )
+
+                # Error SQL/schema tidak perlu diulang berkali-kali.
+                if attempt >= D1_RETRY_COUNT:
+                    break
+
+                time.sleep(min(2 * attempt, 5))
+                continue
+
+            return data
+
+        except requests.RequestException as exc:
+
+            last_error = str(exc)
+
+            print(
+                f"[D1 NETWORK ERROR] Attempt "
+                f"{attempt}/{D1_RETRY_COUNT}: "
+                f"{exc}"
+            )
+
+            if attempt < D1_RETRY_COUNT:
+                time.sleep(min(2 * attempt, 5))
+
+    raise RuntimeError(
+        f"D1 request gagal setelah "
+        f"{D1_RETRY_COUNT} percobaan: "
+        f"{last_error}"
+    )
+
+
+# ============================================================
+# GET EXISTING URLS
+# ============================================================
+
+def get_already_visited_urls_d1():
+    """
+    Hanya SATU query read untuk mengambil URL yang sudah ada.
+
+    Ini sengaja dilakukan sekali di awal supaya crawler tidak
+    melakukan SELECT ke D1 untuk setiap URL.
+    """
+
+    print("[D1] Mengambil daftar URL yang sudah tersimpan...")
+
+    batch = [
+        {
+            "sql": """
+                SELECT url
+                FROM documents
+            """,
+            "params": [],
+        }
+    ]
 
     try:
-        data = response.json()
-    except ValueError:
+
+        data = d1_request(batch)
+
+        urls = set()
+
+        results = data.get("result", [])
+
+        if not results:
+            return urls
+
+        for result in results:
+
+            rows = result.get("results", [])
+
+            for row in rows:
+
+                url = row.get("url")
+
+                if url:
+                    urls.add(url)
+
         print(
-            "[ERROR D1 API] Cloudflare mengembalikan "
-            "response yang bukan JSON."
+            f"[D1] {len(urls):,} URL sudah ada."
         )
 
-        print(f"[ERROR D1 API RAW] {response.text[:2000]}")
+        return urls
 
-        return {
-            "success": False,
-            "errors": [
-                {
-                    "message": "Response Cloudflare bukan JSON"
-                }
-            ]
-        }
+    except Exception as exc:
 
-    # ========================================================
-    # CLOUDFLARE API ERROR
-    # ========================================================
-
-    if not data.get("success", False):
         print(
-            "[ERROR D1 API]",
-            data
+            f"[D1 READ ERROR] {exc}"
         )
 
-    return data
+        print(
+            "[D1] Crawler dihentikan agar tidak "
+            "mengulang crawl dan berpotensi menulis data duplikat."
+        )
+
+        raise
+
+
+# ============================================================
+# URL HELPERS
+# ============================================================
+
+def normalize_url(url):
+    try:
+
+        parsed = urlparse(url)
+
+        if parsed.scheme not in ("http", "https"):
+            return None
+
+        if not parsed.netloc:
+            return None
+
+        hostname = parsed.hostname
+
+        if not hostname:
+            return None
+
+        hostname = hostname.lower()
+
+        # Buang www hanya untuk normalisasi hostname.
+        # URL tetap menggunakan hostname hasil normalisasi.
+        if hostname.startswith("www."):
+            hostname = hostname[4:]
+
+        path = parsed.path or "/"
+
+        # Hilangkan // berlebihan
+        path = re.sub(r"/+", "/", path)
+
+        # Jangan simpan fragment/query agar URL canonical lebih stabil.
+        normalized = (
+            f"{parsed.scheme.lower()}://"
+            f"{hostname}"
+            f"{path}"
+        )
+
+        if len(normalized) > MAX_URL_LENGTH:
+            return None
+
+        return normalized.rstrip("/") if path != "/" else normalized
+
+    except Exception:
+        return None
+
+
+def get_domain(url):
+    try:
+        hostname = urlparse(url).hostname
+
+        if not hostname:
+            return ""
+
+        hostname = hostname.lower()
+
+        if hostname.startswith("www."):
+            hostname = hostname[4:]
+
+        return hostname
+
+    except Exception:
+        return ""
+
+
+def get_path_depth(url):
+    try:
+
+        path = urlparse(url).path
+
+        parts = [
+            x for x in path.split("/")
+            if x
+        ]
+
+        return len(parts)
+
+    except Exception:
+        return 999
+
+
+def is_valid_url(url):
+    if not url:
+        return False
+
+    if len(url) > MAX_URL_LENGTH:
+        return False
+
+    parsed = urlparse(url)
+
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    if not parsed.hostname:
+        return False
+
+    # Hindari URL dengan username/password.
+    if parsed.username or parsed.password:
+        return False
+
+    if get_path_depth(url) > MAX_PATH_DEPTH:
+        return False
+
+    return True
+
+
+# ============================================================
+# SPAM / TRAP FILTER
+# ============================================================
+
+SPAM_TLDS = {
+    ".zip",
+    ".mov",
+    ".click",
+    ".xyz",
+    ".top",
+    ".gq",
+    ".tk",
+    ".ml",
+    ".cf",
+    ".ga",
+}
+
+
+TRAP_PATTERNS = [
+    r"/calendar/",
+    r"/tag/",
+    r"/tags/",
+    r"/page/\d+",
+    r"/search",
+    r"/login",
+    r"/signin",
+    r"/signup",
+    r"/register",
+    r"/cart",
+    r"/checkout",
+    r"/wp-admin",
+    r"/feed",
+    r"/comments/feed",
+]
+
+
+def is_spam_domain(url):
+
+    hostname = get_domain(url)
+
+    for tld in SPAM_TLDS:
+
+        if hostname.endswith(tld):
+            return True
+
+    return False
+
+
+def is_spider_trap(url):
+
+    lowered = url.lower()
+
+    for pattern in TRAP_PATTERNS:
+
+        if re.search(pattern, lowered):
+            return True
+
+    return False
+
+
+# ============================================================
+# ROBOTS
+# ============================================================
+
+def can_fetch_robots(url):
+
+    domain = get_domain(url)
+
+    if not domain:
+        return False
+
+    if domain in robots_cache:
+        return robots_cache[domain]
+
+    parsed = urlparse(url)
+
+    robots_url = (
+        f"{parsed.scheme}://"
+        f"{parsed.netloc}/robots.txt"
+    )
+
+    parser = RobotFileParser()
+
+    parser.set_url(robots_url)
+
+    try:
+
+        parser.read()
+
+        allowed = parser.can_fetch(
+            USER_AGENT,
+            url,
+        )
+
+    except Exception:
+
+        # Jika robots tidak dapat dibaca,
+        # jangan langsung memblokir seluruh domain.
+        allowed = True
+
+    robots_cache[domain] = allowed
+
+    return allowed
+
+
+# ============================================================
+# HTML EXTRACTION
+# ============================================================
+
+def clean_text(text):
+
+    if not text:
+        return ""
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
+def extract_title(soup):
+
+    if soup.title:
+
+        title = clean_text(
+            soup.title.get_text(" ", strip=True)
+        )
+
+        if title:
+            return title[:500]
+
+    og_title = soup.find(
+        "meta",
+        property="og:title",
+    )
+
+    if og_title:
+
+        value = og_title.get("content")
+
+        if value:
+            return clean_text(value)[:500]
+
+    return ""
+
+
+def extract_description(soup):
+
+    meta = soup.find(
+        "meta",
+        attrs={
+            "name": re.compile(
+                r"^description$",
+                re.I,
+            )
+        },
+    )
+
+    if meta:
+
+        content = meta.get("content")
+
+        if content:
+            return clean_text(content)[:1000]
+
+    og_description = soup.find(
+        "meta",
+        property="og:description",
+    )
+
+    if og_description:
+
+        content = og_description.get("content")
+
+        if content:
+            return clean_text(content)[:1000]
+
+    return ""
+
+
+def extract_snippet(soup):
+
+    description = extract_description(soup)
+
+    if description:
+        return description[:1000]
+
+    for tag in soup(
+        [
+            "script",
+            "style",
+            "noscript",
+            "svg",
+            "nav",
+            "footer",
+            "header",
+        ]
+    ):
+        tag.decompose()
+
+    text = clean_text(
+        soup.get_text(
+            " ",
+            strip=True,
+        )
+    )
+
+    return text[:1000]
+
+
+def extract_favicon(soup, page_url):
+
+    icon = soup.find(
+        "link",
+        rel=lambda value: (
+            value and
+            any(
+                "icon" in str(x).lower()
+                for x in (
+                    value
+                    if isinstance(value, list)
+                    else [value]
+                )
+            )
+        ),
+    )
+
+    if icon:
+
+        href = icon.get("href")
+
+        if href:
+
+            return urljoin(
+                page_url,
+                href,
+            )[:1000]
+
+    parsed = urlparse(page_url)
+
+    return (
+        f"{parsed.scheme}://"
+        f"{parsed.netloc}/favicon.ico"
+    )
+
+
+def extract_thumbnail(soup, page_url):
+
+    og_image = soup.find(
+        "meta",
+        property="og:image",
+    )
+
+    if og_image:
+
+        content = og_image.get("content")
+
+        if content:
+
+            return urljoin(
+                page_url,
+                content,
+            )[:2000]
+
+    twitter_image = soup.find(
+        "meta",
+        attrs={
+            "name": "twitter:image"
+        },
+    )
+
+    if twitter_image:
+
+        content = twitter_image.get("content")
+
+        if content:
+
+            return urljoin(
+                page_url,
+                content,
+            )[:2000]
+
+    return ""
+
+
+def extract_language(soup):
+
+    html = soup.find("html")
+
+    if not html:
+        return ""
+
+    language = html.get("lang")
+
+    if language:
+        return clean_text(language)[:20]
+
+    return ""
+
+
+def extract_last_modified(soup, headers):
+
+    header_value = headers.get(
+        "Last-Modified"
+    )
+
+    if header_value:
+        return header_value[:100]
+
+    meta_names = [
+        "article:modified_time",
+        "last-modified",
+        "dateModified",
+    ]
+
+    for name in meta_names:
+
+        tag = soup.find(
+            "meta",
+            attrs={
+                "property": name
+            },
+        )
+
+        if not tag:
+
+            tag = soup.find(
+                "meta",
+                attrs={
+                    "name": name
+                },
+            )
+
+        if tag:
+
+            content = tag.get("content")
+
+            if content:
+                return content[:100]
+
+    return ""
+
+
+# ============================================================
+# LINK EXTRACTION
+# ============================================================
+
+def extract_links(soup, base_url):
+
+    links = set()
+
+    base_domain = get_domain(base_url)
+
+    for anchor in soup.find_all("a", href=True):
+
+        href = anchor.get("href")
+
+        if not href:
+            continue
+
+        href = href.strip()
+
+        if href.startswith((
+            "#",
+            "javascript:",
+            "mailto:",
+            "tel:",
+            "data:",
+        )):
+            continue
+
+        absolute = urljoin(
+            base_url,
+            href,
+        )
+
+        normalized = normalize_url(
+            absolute
+        )
+
+        if not normalized:
+            continue
+
+        if not is_valid_url(normalized):
+            continue
+
+        if is_spam_domain(normalized):
+            continue
+
+        if is_spider_trap(normalized):
+            continue
+
+        # Graph tetap boleh lintas domain.
+        # Batas crawl domain diterapkan ketika URL benar-benar
+        # dimasukkan ke queue.
+        links.add(normalized)
+
+    return links
+
+
+# ============================================================
+# CONTENT HASH
+# ============================================================
+
+def make_content_hash(
+    title,
+    snippet,
+):
+
+    raw = (
+        f"{title}\n"
+        f"{snippet}"
+    )
+
+    return hashlib.md5(
+        raw.encode(
+            "utf-8",
+            errors="ignore",
+        )
+    ).hexdigest()
+
+
+# ============================================================
+# HTTP FETCH
+# ============================================================
+
+async def fetch_page(
+    session,
+    url,
+):
+
+    timeout = aiohttp.ClientTimeout(
+        total=HTTP_TIMEOUT
+    )
+
+    try:
+
+        async with session.get(
+            url,
+            timeout=timeout,
+            allow_redirects=True,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": (
+                    "text/html,"
+                    "application/xhtml+xml,"
+                    "application/xml;q=0.9,"
+                    "*/*;q=0.8"
+                ),
+            },
+        ) as response:
+
+            if response.status != 200:
+                return None
+
+            content_type = (
+                response.headers.get(
+                    "Content-Type",
+                    "",
+                ).lower()
+            )
+
+            if (
+                "text/html" not in content_type
+                and "application/xhtml+xml"
+                not in content_type
+            ):
+                return None
+
+            final_url = normalize_url(
+                str(response.url)
+            )
+
+            if not final_url:
+                return None
+
+            body = await response.text(
+                errors="ignore"
+            )
+
+            if not body:
+                return None
+
+            return {
+                "url": final_url,
+                "html": body,
+                "headers": response.headers,
+            }
+
+    except Exception:
+        return None
 
 
 # ============================================================
@@ -247,2103 +898,775 @@ class ProfessionalSearchCrawler:
 
     def __init__(
         self,
-        seed_urls,
-        max_run_seconds=MAX_RUN_SECONDS,
-        concurrency=CONCURRENCY
+        existing_urls,
     ):
 
-        self.seed_urls = seed_urls
-
-        self.max_run_seconds = max_run_seconds
-
-        self.concurrency = concurrency
-
-        # ----------------------------------------------------
-        # QUEUE
-        # ----------------------------------------------------
+        self.existing_urls = set(
+            existing_urls
+        )
 
         self.queue = asyncio.PriorityQueue()
 
-        # ----------------------------------------------------
-        # URL STATE
-        # ----------------------------------------------------
+        self.session = None
 
-        self.visited_urls = set()
+        self.counter = 0
 
-        self.visited_domains = set()
-
-        self.domain_robots = {}
-
-        # ----------------------------------------------------
-        # DATA
-        # ----------------------------------------------------
-
-        self.pages_data = {}
-
-        self.graph = {}
-
-        self.domain_counts = {}
-
-        # ----------------------------------------------------
-        # LIMITS
-        # ----------------------------------------------------
-
-        self.MAX_PAGES_PER_DOMAIN = MAX_PAGES_PER_DOMAIN
-
-        # ----------------------------------------------------
-        # WORKER STATE
-        # ----------------------------------------------------
-
-        self.active_workers = 0
-
-        self.worker_lock = asyncio.Lock()
-
-        # ----------------------------------------------------
-        # TIMER
-        # ----------------------------------------------------
-
-        self.start_time = None
-
-        # ----------------------------------------------------
-        # HTTP HEADERS
-        # ----------------------------------------------------
-
-        self.headers = {
-            "User-Agent": (
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/123.0.0.0 "
-                "Safari/537.36"
-            ),
-
-            "Accept": (
-                "text/html,"
-                "application/xhtml+xml,"
-                "application/xml;q=0.9,"
-                "image/avif,"
-                "image/webp,"
-                "*/*;q=0.8"
-            ),
-
-            "Accept-Language": (
-                "id-ID,id;q=0.9,"
-                "en-US;q=0.8,en;q=0.7"
-            ),
-
-            "Upgrade-Insecure-Requests": "1",
-
-            "Sec-Fetch-Dest": "document",
-
-            "Sec-Fetch-Mode": "navigate",
-
-            "Sec-Fetch-Site": "none",
-
-            "Sec-Fetch-User": "?1",
-        }
-
-
-    # ========================================================
-    # TIME LIMIT
-    # ========================================================
-
-    def time_exceeded(self):
-        """
-        Mengecek apakah crawler sudah mencapai batas waktu.
-        """
-
-        if self.start_time is None:
-            return False
-
-        return (
-            time.monotonic() - self.start_time
-            >= self.max_run_seconds
+        self.local_seen = set(
+            existing_urls
         )
 
-
-    def elapsed_seconds(self):
-        if self.start_time is None:
-            return 0
-
-        return int(
-            time.monotonic() - self.start_time
-        )
-
-
-    # ========================================================
-    # SPAM DOMAIN
-    # ========================================================
-
-    def is_spam_domain(self, domain):
-
-        spam_tlds = (
-            ".cn",
-            ".xyz",
-            ".top",
-            ".pw",
-            ".tk",
-            ".ml",
-            ".ga",
-            ".cf",
-            ".gq",
-            ".wang",
-            ".icu",
-            ".best",
-            ".monster",
-            ".work",
-            ".click",
-            ".loan"
-        )
-
-        domain = domain.lower().rstrip(".")
-
-        return any(
-            domain.endswith(tld)
-            for tld in spam_tlds
-        )
-
-
-    # ========================================================
-    # SPIDER TRAP
-    # ========================================================
-
-    def is_spider_trap(self, url):
-
-        parsed = urlparse(url)
-
-        path = parsed.path.lower()
-
-        # URL terlalu panjang
-        if len(url) > MAX_URL_LENGTH:
-            return True
-
-        # Path terlalu dalam
-        path_segments = [
-            p
-            for p in path.split("/")
-            if p
-        ]
-
-        if len(path_segments) > MAX_PATH_DEPTH:
-            return True
-
-        # Repeating path:
-        # /abc/abc/
-        if re.search(
-            r"/(.+?)/\1/",
-            path
-        ):
-            return True
-
-        trap_keywords = (
-            "login",
-            "register",
-            "signup",
-            "signin",
-            "logout",
-            "cart",
-            "checkout",
-            "add-to-cart",
-            "replytocom",
-            "wp-json",
-            "xmlrpc.php",
-            "calendar",
-            "event",
-            "archive",
-            "share.php",
-            "print",
-            "action=",
-            "do=",
-            "redirect=",
-            "goto=",
-            "feed/",
-            "rss/",
-            "trackback/"
-        )
-
-        lower_url = url.lower()
-
-        return any(
-            keyword in lower_url
-            for keyword in trap_keywords
-        )
-
-
-    # ========================================================
-    # CLEAN URL
-    # ========================================================
-
-    def clean_url_string(self, url):
-
-        try:
-            parsed = urlparse(url)
-        except Exception:
-            return ""
-
-        scheme = parsed.scheme.lower()
-
-        netloc = parsed.netloc.lower()
-
-        path = parsed.path or "/"
-
-        # Hilangkan fragment dan query.
-        clean_url = (
-            f"{scheme}://"
-            f"{netloc}"
-            f"{path}"
-        )
-
-        # Hilangkan trailing slash,
-        # kecuali root "/".
-        root_url = (
-            f"{scheme}://"
-            f"{netloc}/"
-        )
-
-        if (
-            len(clean_url) > len(root_url)
-            and clean_url.endswith("/")
-        ):
-            clean_url = clean_url[:-1]
-
-        return clean_url
-
-
-    # ========================================================
-    # ROBOTS.TXT
-    # ========================================================
-
-    async def get_robots_rules(
-        self,
-        session,
-        url
-    ):
-
-        parsed = urlparse(url)
-
-        domain_base = (
-            f"{parsed.scheme}://"
-            f"{parsed.netloc}"
-        )
-
-        if domain_base in self.domain_robots:
-            return self.domain_robots[
-                domain_base
-            ]
-
-        robots_url = (
-            f"{domain_base}/robots.txt"
-        )
-
-        rfp = RobotFileParser()
-
-        rfp.set_url(robots_url)
-
-        try:
-
-            timeout = aiohttp.ClientTimeout(
-                total=ROBOTS_TIMEOUT
-            )
-
-            async with session.get(
-                robots_url,
-                timeout=timeout,
-                headers=self.headers
-            ) as resp:
-
-                if resp.status == 200:
-
-                    content = await resp.text(
-                        errors="ignore"
-                    )
-
-                    rfp.parse(
-                        content.splitlines()
-                    )
-
-                else:
-
-                    rfp.allow_all = True
-
-        except Exception:
-
-            rfp.allow_all = True
-
-        self.domain_robots[
-            domain_base
-        ] = rfp
-
-        return rfp
-
-
-    # ========================================================
-    # VALID URL
-    # ========================================================
-
-    def is_valid_url(self, url):
-
-        try:
-            parsed = urlparse(url)
-        except Exception:
-            return False
-
-        if not parsed.netloc:
-            return False
-
-        if parsed.scheme not in (
-            "http",
-            "https"
-        ):
-            return False
-
-        invalid_exts = (
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".pdf",
-            ".zip",
-            ".rar",
-            ".7z",
-            ".css",
-            ".js",
-            ".svg",
-            ".mp4",
-            ".mp3",
-            ".webp",
-            ".xml",
-            ".json",
-            ".ico",
-            ".exe",
-            ".dmg",
-            ".iso",
-            ".csv",
-            ".xlsx",
-            ".doc",
-            ".docx"
-        )
-
-        path_lower = parsed.path.lower()
-
-        if any(
-            path_lower.endswith(ext)
-            for ext in invalid_exts
-        ):
-            return False
-
-        return True
-
-
-    # ========================================================
-    # CLEAN TEXT
-    # ========================================================
-
-    def clean_text(self, text):
-
-        if not text:
-            return ""
-
-        return re.sub(
-            r"\s+",
-            " ",
-            text
-        ).strip()
-
-
-    # ========================================================
-    # FETCH PAGE
-    # ========================================================
-
-    async def fetch(
-        self,
-        session,
-        url
-    ):
-
-        # Jangan mulai request baru
-        # jika waktu sudah habis.
-        if self.time_exceeded():
-            return None, None, None
-
-        try:
-
-            timeout = aiohttp.ClientTimeout(
-                total=HTTP_TIMEOUT
-            )
-
-            async with session.get(
-                url,
-                timeout=timeout,
-                headers=self.headers,
-                allow_redirects=True
-            ) as response:
-
-                # Setelah response datang,
-                # cek lagi batas waktu.
-                if self.time_exceeded():
-                    return None, None, None
-
-                content_type = (
-                    response.headers
-                    .get(
-                        "Content-Type",
-                        ""
-                    )
-                    .lower()
-                )
-
-                if (
-                    response.status == 200
-                    and "text/html"
-                    in content_type
-                ):
-
-                    html = await response.text(
-                        errors="ignore"
-                    )
-
-                    final_url = (
-                        self.clean_url_string(
-                            str(response.url)
-                        )
-                    )
-
-                    last_mod = (
-                        response.headers.get(
-                            "Last-Modified"
-                        )
-                        or
-                        response.headers.get(
-                            "Date"
-                        )
-                    )
-
-                    return (
-                        final_url,
-                        html,
-                        last_mod
-                    )
-
-                return None, None, None
-
-        except Exception:
-
-            return None, None, None
-
-
-    # ========================================================
-    # PROCESS PAGE
-    # ========================================================
-
-    async def process_page(
+    async def add_url(
         self,
         url,
-        html,
-        last_mod_header
+        priority=10,
     ):
 
-        if self.time_exceeded():
+        if time_exceeded():
             return
 
-        if not html:
+        normalized = normalize_url(url)
+
+        if not normalized:
             return
 
-        soup = BeautifulSoup(
-            html,
-            "html.parser"
-        )
-
-        domain_name = (
-            urlparse(url).netloc
-        )
-
-        # ----------------------------------------------------
-        # NOINDEX
-        # ----------------------------------------------------
-
-        robots_meta = soup.find(
-            "meta",
-            attrs={
-                "name": re.compile(
-                    r"^robots$",
-                    re.I
-                )
-            }
-        )
-
-        if (
-            robots_meta
-            and robots_meta.get("content")
-            and "noindex"
-            in robots_meta["content"].lower()
-        ):
+        if normalized in self.local_seen:
             return
 
-        # ----------------------------------------------------
-        # LANGUAGE
-        # ----------------------------------------------------
+        if normalized in visited_urls:
+            return
 
-        html_tag = soup.find("html")
+        if normalized in queued_urls:
+            return
 
-        language = (
-            html_tag.get("lang")
-            if html_tag
-            and html_tag.get("lang")
-            else "id"
+        if not is_valid_url(normalized):
+            return
+
+        if is_spam_domain(normalized):
+            return
+
+        if is_spider_trap(normalized):
+            return
+
+        domain = get_domain(normalized)
+
+        count = domain_page_count.get(
+            domain,
+            0,
         )
 
-        language = (
-            language
-            .split("-")[0]
-            .lower()[:5]
-        )
+        if count >= MAX_PAGES_PER_DOMAIN:
+            return
 
-        # ----------------------------------------------------
-        # TITLE
-        # ----------------------------------------------------
+        if not can_fetch_robots(normalized):
+            return
 
-        title_tag = soup.find("title")
+        queued_urls.add(normalized)
 
-        title = (
-            self.clean_text(
-                title_tag.get_text()
-            )
-            if title_tag
-            else domain_name
-        )
+        self.counter += 1
 
-        # ----------------------------------------------------
-        # DESCRIPTION
-        # ----------------------------------------------------
-
-        snippet = ""
-
-        meta_desc = (
-            soup.find(
-                "meta",
-                attrs={
-                    "name": re.compile(
-                        r"^description$",
-                        re.I
-                    )
-                }
-            )
-            or
-            soup.find(
-                "meta",
-                attrs={
-                    "property": re.compile(
-                        r"^og:description$",
-                        re.I
-                    )
-                }
-            )
-        )
-
-        if (
-            meta_desc
-            and meta_desc.get("content")
-        ):
-
-            candidate = self.clean_text(
-                meta_desc["content"]
-            )
-
-            if len(candidate) > 30:
-                snippet = candidate
-
-        # ----------------------------------------------------
-        # FALLBACK TEXT EXTRACTION
-        # ----------------------------------------------------
-
-        if not snippet:
-
-            for element in soup(
-                [
-                    "script",
-                    "style",
-                    "nav",
-                    "header",
-                    "footer",
-                    "noscript",
-                    "aside",
-                    "form",
-                    "button",
-                    "svg"
-                ]
-            ):
-                element.extract()
-
-            main_content = (
-                soup.find("main")
-                or
-                soup.find("article")
-                or
-                soup.find(
-                    id=re.compile(
-                        r"content|main",
-                        re.I
-                    )
-                )
-                or
-                soup.body
-            )
-
-            if main_content:
-
-                paragraphs = (
-                    main_content.find_all("p")
-                )
-
-                valid_paragraphs = []
-
-                for p in paragraphs:
-
-                    text = self.clean_text(
-                        p.get_text()
-                    )
-
-                    if len(text) > 35:
-                        valid_paragraphs.append(
-                            text
-                        )
-
-                if valid_paragraphs:
-
-                    combined_text = (
-                        " ... ".join(
-                            valid_paragraphs
-                        )
-                    )
-
-                    if len(combined_text) > 160:
-
-                        snippet = (
-                            combined_text[:160]
-                            + "..."
-                        )
-
-                    else:
-
-                        snippet = combined_text
-
-                else:
-
-                    raw_text = self.clean_text(
-                        main_content.get_text(
-                            separator=" "
-                        )
-                    )
-
-                    if len(raw_text) > 160:
-
-                        snippet = (
-                            raw_text[:160]
-                            + "..."
-                        )
-
-                    else:
-
-                        snippet = raw_text
-
-        if not snippet:
-            snippet = title
-
-        # ----------------------------------------------------
-        # CONTENT HASH
-        # ----------------------------------------------------
-
-        content_hash = hashlib.md5(
+        await self.queue.put(
             (
-                title
-                + snippet
-            ).encode("utf-8")
-        ).hexdigest()
-
-        # ----------------------------------------------------
-        # FAVICON
-        # ----------------------------------------------------
-
-        icon_tag = soup.find(
-            "link",
-            rel=lambda r:
-                r
-                and any(
-                    "icon" in item.lower()
-                    for item in (
-                        r
-                        if isinstance(r, list)
-                        else [r]
-                    )
-                )
+                priority,
+                self.counter,
+                normalized,
+            )
         )
 
-        if (
-            icon_tag
-            and icon_tag.get("href")
-        ):
+    async def worker(self):
 
-            favicon = urljoin(
-                url,
-                icon_tag["href"]
-            )
-
-        else:
-
-            favicon = (
-                "https://www.google.com/"
-                "s2/favicons"
-                f"?domain={domain_name}"
-                "&sz=64"
-            )
-
-        # ----------------------------------------------------
-        # OG IMAGE
-        # ----------------------------------------------------
-
-        og_image = soup.find(
-            "meta",
-            attrs={
-                "property": lambda x:
-                    x
-                    and x.lower()
-                    == "og:image"
-            }
-        )
-
-        if (
-            og_image
-            and og_image.get("content")
-        ):
-
-            thumbnail = urljoin(
-                url,
-                og_image["content"]
-            )
-
-        else:
-
-            thumbnail = ""
-
-        # ----------------------------------------------------
-        # LAST MODIFIED
-        # ----------------------------------------------------
-
-        last_modified = last_mod_header
-
-        if not last_modified:
-
-            meta_mod = (
-                soup.find(
-                    "meta",
-                    attrs={
-                        "property":
-                        lambda x:
-                            x
-                            and
-                            "modified_time"
-                            in x.lower()
-                    }
-                )
-                or
-                soup.find(
-                    "meta",
-                    attrs={
-                        "property":
-                        lambda x:
-                            x
-                            and
-                            "published_time"
-                            in x.lower()
-                    }
-                )
-            )
-
-            if (
-                meta_mod
-                and meta_mod.get("content")
-            ):
-
-                last_modified = (
-                    meta_mod["content"]
-                )
-
-        # ----------------------------------------------------
-        # OUTGOING LINKS
-        # ----------------------------------------------------
-
-        outgoing_links = set()
-
-        for link in soup.find_all(
-            "a",
-            href=True
-        ):
-
-            # Jika waktu habis,
-            # hentikan ekstraksi link.
-            if self.time_exceeded():
-                break
-
-            rel_attr = link.get("rel")
-
-            if rel_attr:
-
-                rel_lower = [
-                    r.lower()
-                    for r in rel_attr
-                ]
-
-                if "nofollow" in rel_lower:
-                    continue
-
-            raw_url = urljoin(
-                url,
-                link["href"]
-            )
-
-            try:
-                parsed_raw = urlparse(
-                    raw_url
-                )
-            except Exception:
-                continue
-
-            # Query URL tidak dicrawl
-            if parsed_raw.query:
-                continue
-
-            clean_url = (
-                self.clean_url_string(
-                    raw_url
-                )
-            )
-
-            if not self.is_valid_url(
-                clean_url
-            ):
-                continue
-
-            target_domain = (
-                urlparse(
-                    clean_url
-                ).netloc
-            )
-
-            if self.is_spam_domain(
-                target_domain
-            ):
-                continue
-
-            if self.is_spider_trap(
-                clean_url
-            ):
-                continue
-
-            outgoing_links.add(
-                clean_url
-            )
-
-            # ------------------------------------------------
-            # DISCOVER DOMAIN
-            # ------------------------------------------------
-
-            root_domain_url = (
-                f"{urlparse(clean_url).scheme}"
-                f"://"
-                f"{target_domain}/"
-            )
-
-            if (
-                target_domain
-                not in self.visited_domains
-                and
-                root_domain_url
-                not in self.visited_urls
-            ):
-
-                self.visited_domains.add(
-                    target_domain
-                )
-
-                await self.queue.put(
-                    (
-                        0,
-                        root_domain_url
-                    )
-                )
-
-            # ------------------------------------------------
-            # DOMAIN COUNT
-            # ------------------------------------------------
-
-            if (
-                target_domain
-                not in self.domain_counts
-            ):
-
-                self.domain_counts[
-                    target_domain
-                ] = 0
-
-            # ------------------------------------------------
-            # MAX PAGES PER DOMAIN
-            # ------------------------------------------------
-
-            if (
-                self.domain_counts[
-                    target_domain
-                ]
-                >= self.MAX_PAGES_PER_DOMAIN
-            ):
-                continue
-
-            # ------------------------------------------------
-            # ADD URL TO QUEUE
-            # ------------------------------------------------
-
-            if clean_url in self.visited_urls:
-                continue
-
-            self.visited_urls.add(
-                clean_url
-            )
-
-            self.domain_counts[
-                target_domain
-            ] += 1
-
-            path_segments = [
-                p
-                for p in urlparse(
-                    clean_url
-                ).path.split("/")
-                if p
-            ]
-
-            priority_score = (
-                len(path_segments) * 10
-            )
-
-            if (
-                target_domain.count(".") > 1
-                and "www"
-                not in target_domain
-            ):
-                priority_score -= 5
-
-            await self.queue.put(
-                (
-                    priority_score,
-                    clean_url
-                )
-            )
-
-        # ----------------------------------------------------
-        # SAVE PAGE
-        # ----------------------------------------------------
-
-        self.pages_data[url] = {
-            "url": url,
-            "domain": domain_name,
-            "title": title,
-            "snippet": snippet,
-            "favicon": favicon,
-            "thumbnail": thumbnail,
-            "last_modified": last_modified,
-            "content_hash": content_hash,
-            "language": language
-        }
-
-        self.graph[url] = list(
-            outgoing_links
-        )
-
-
-    # ========================================================
-    # WORKER
-    # ========================================================
-
-    async def worker(
-        self,
-        session
-    ):
-
-        while True:
-
-            # ------------------------------------------------
-            # HARD TIME LIMIT
-            # ------------------------------------------------
-
-            if self.time_exceeded():
-                break
+        while not time_exceeded():
 
             try:
 
-                priority, url = (
+                priority, _, url = (
                     await asyncio.wait_for(
                         self.queue.get(),
-                        timeout=2.0
+                        timeout=2,
                     )
                 )
 
             except asyncio.TimeoutError:
 
-                if self.time_exceeded():
-                    break
-
-                async with self.worker_lock:
-
-                    if (
-                        self.queue.empty()
-                        and
-                        self.active_workers == 0
-                    ):
-                        break
+                if self.queue.empty():
+                    return
 
                 continue
 
-            # ------------------------------------------------
-            # CHECK AGAIN AFTER QUEUE
-            # ------------------------------------------------
-
-            if self.time_exceeded():
-
-                self.queue.task_done()
-
-                break
-
-            async with self.worker_lock:
-
-                self.active_workers += 1
-
             try:
 
-                # ------------------------------------------------
-                # ROBOTS
-                # ------------------------------------------------
+                queued_urls.discard(url)
 
-                robots_rules = (
-                    await self.get_robots_rules(
-                        session,
-                        url
-                    )
-                )
-
-                if not robots_rules.can_fetch(
-                    self.headers["User-Agent"],
-                    url
-                ):
-
+                if url in visited_urls:
                     continue
 
-                # ------------------------------------------------
-                # CRAWL DELAY
-                # ------------------------------------------------
+                domain = get_domain(url)
 
-                crawl_delay = (
-                    robots_rules.crawl_delay(
-                        self.headers[
-                            "User-Agent"
-                        ]
+                count = domain_page_count.get(
+                    domain,
+                    0,
+                )
+
+                if count >= MAX_PAGES_PER_DOMAIN:
+                    continue
+
+                visited_urls.add(url)
+
+                page = await fetch_page(
+                    self.session,
+                    url,
+                )
+
+                if not page:
+                    stats["errors"] += 1
+                    continue
+
+                final_url = page["url"]
+
+                html = page["html"]
+
+                headers = page["headers"]
+
+                # Redirected URL may differ.
+                visited_urls.add(
+                    final_url
+                )
+
+                soup = BeautifulSoup(
+                    html,
+                    "html.parser",
+                )
+
+                title = extract_title(
+                    soup
+                )
+
+                snippet = extract_snippet(
+                    soup
+                )
+
+                if not title and not snippet:
+                    continue
+
+                favicon = extract_favicon(
+                    soup,
+                    final_url,
+                )
+
+                thumbnail = extract_thumbnail(
+                    soup,
+                    final_url,
+                )
+
+                language = extract_language(
+                    soup
+                )
+
+                last_modified = (
+                    extract_last_modified(
+                        soup,
+                        headers,
                     )
                 )
 
-                if crawl_delay:
+                content_hash = (
+                    make_content_hash(
+                        title,
+                        snippet,
+                    )
+                )
 
-                    # Jangan tidur melewati batas
-                    # crawler.
-                    remaining = (
-                        self.max_run_seconds
-                        - self.elapsed_seconds()
+                final_domain = get_domain(
+                    final_url
+                )
+
+                document = {
+                    "url": final_url,
+                    "domain": final_domain,
+                    "title": title,
+                    "snippet": snippet,
+                    "favicon": favicon,
+                    "thumbnail": thumbnail,
+                    "last_modified": (
+                        last_modified
+                    ),
+                    "content_hash": (
+                        content_hash
+                    ),
+                    "language": language,
+                }
+
+                documents.append(
+                    document
+                )
+
+                domain_page_count[
+                    final_domain
+                ] = (
+                    domain_page_count.get(
+                        final_domain,
+                        0,
+                    )
+                    + 1
+                )
+
+                stats["crawled"] += 1
+
+                # ==================================================
+                # OUTGOING GRAPH
+                # ==================================================
+
+                links = extract_links(
+                    soup,
+                    final_url,
+                )
+
+                for target_url in links:
+
+                    graph_edges.append(
+                        {
+                            "source_url": final_url,
+                            "target_url": target_url,
+                        }
                     )
 
-                    if remaining <= 0:
+                    stats["graph"] += 1
+
+                # ==================================================
+                # QUEUE NEW URLS
+                # ==================================================
+
+                for target_url in links:
+
+                    if time_exceeded():
                         break
 
-                    await asyncio.sleep(
-                        min(
-                            crawl_delay,
-                            remaining
+                    # URL dari domain yang sudah penuh
+                    # tidak perlu dimasukkan.
+                    target_domain = get_domain(
+                        target_url
+                    )
+
+                    target_count = (
+                        domain_page_count.get(
+                            target_domain,
+                            0,
                         )
                     )
 
-                # ------------------------------------------------
-                # CHECK TIME BEFORE REQUEST
-                # ------------------------------------------------
+                    if (
+                        target_count
+                        >= MAX_PAGES_PER_DOMAIN
+                    ):
+                        continue
 
-                if self.time_exceeded():
-                    break
+                    await self.add_url(
+                        target_url,
+                        priority=20,
+                    )
 
-                # ------------------------------------------------
-                # LOG
-                # ------------------------------------------------
+                stats["saved"] += 1
 
-                elapsed = (
-                    self.elapsed_seconds()
-                )
-
-                if (
-                    len(self.pages_data) % 10 == 0
-                    and
-                    len(self.pages_data) > 0
-                ):
+                if stats["crawled"] % 100 == 0:
 
                     print(
-                        f"[{elapsed}s/"
-                        f"{self.max_run_seconds}s] "
-                        f"[{len(self.pages_data)} "
-                        f"terindeks] "
-                        f"Merayapi: {url}"
+                        "[CRAWLER] "
+                        f"crawled={stats['crawled']:,} "
+                        f"queued={self.queue.qsize():,} "
+                        f"graph={stats['graph']:,} "
+                        f"time={elapsed_seconds()}s"
                     )
 
-                # ------------------------------------------------
-                # FETCH
-                # ------------------------------------------------
+            except Exception as exc:
 
-                final_url, html, last_mod = (
-                    await self.fetch(
-                        session,
-                        url
-                    )
-                )
-
-                if not html:
-                    continue
-
-                # ------------------------------------------------
-                # PROCESS
-                # ------------------------------------------------
-
-                try:
-
-                    await self.process_page(
-                        final_url or url,
-                        html,
-                        last_mod
-                    )
-
-                except Exception as e:
-
-                    print(
-                        "[PAGE PROCESS ERROR] "
-                        f"{url} -> {e}"
-                    )
-
-            except Exception as e:
+                stats["errors"] += 1
 
                 print(
-                    "[WORKER ERROR] "
-                    f"{url} -> {e}"
+                    f"[CRAWLER ERROR] "
+                    f"{url}: {exc}"
                 )
 
             finally:
 
-                async with self.worker_lock:
-
-                    self.active_workers -= 1
-
                 self.queue.task_done()
 
-
-    # ========================================================
-    # RUN CRAWLER
-    # ========================================================
-
-    async def run(self):
-
-        self.start_time = time.monotonic()
-
-        # ----------------------------------------------------
-        # SEED
-        # ----------------------------------------------------
-
-        for url in self.seed_urls:
-
-            if self.time_exceeded():
-                break
-
-            clean_seed = (
-                self.clean_url_string(
-                    url
-                )
-            )
-
-            if not clean_seed:
-                continue
-
-            parsed = urlparse(
-                clean_seed
-            )
-
-            self.visited_domains.add(
-                parsed.netloc
-            )
-
-            self.visited_urls.add(
-                clean_seed
-            )
-
-            await self.queue.put(
-                (
-                    0,
-                    clean_seed
-                )
-            )
-
-        # ----------------------------------------------------
-        # HTTP CONNECTOR
-        # ----------------------------------------------------
+    async def run(
+        self,
+        seeds,
+    ):
 
         connector = aiohttp.TCPConnector(
-            limit=50,
-            limit_per_host=10,
-            ttl_dns_cache=300
+            limit=CONCURRENCY,
+            limit_per_host=3,
+            ttl_dns_cache=300,
         )
 
-        async with aiohttp.ClientSession(
+        self.session = aiohttp.ClientSession(
             connector=connector
-        ) as session:
+        )
 
-            tasks = [
+        try:
+
+            print(
+                "[CRAWLER] Menambahkan seed..."
+            )
+
+            for seed in seeds:
+
+                await self.add_url(
+                    seed,
+                    priority=0,
+                )
+
+            workers = [
                 asyncio.create_task(
-                    self.worker(session)
+                    self.worker()
                 )
-                for _ in range(
-                    self.concurrency
-                )
+                for _ in range(CONCURRENCY)
             ]
 
-            # ------------------------------------------------
-            # WAIT FOR WORKERS
-            # ------------------------------------------------
+            await self.queue.join()
+
+            for worker in workers:
+
+                worker.cancel()
 
             await asyncio.gather(
-                *tasks,
-                return_exceptions=True
+                *workers,
+                return_exceptions=True,
             )
 
-        elapsed = self.elapsed_seconds()
+        finally:
 
-        print(
-            "\n[CRAWLER FINISH]"
-        )
-
-        print(
-            f"Waktu berjalan: "
-            f"{elapsed} detik"
-        )
-
-        print(
-            f"Halaman berhasil diproses: "
-            f"{len(self.pages_data)}"
-        )
-
-        if elapsed >= self.max_run_seconds:
-
-            print(
-                "[TIME LIMIT] "
-                "Crawler berhenti karena "
-                "batas maksimum 1 jam tercapai."
-            )
-
-        else:
-
-            print(
-                "[QUEUE FINISH] "
-                "Tidak ada pekerjaan tersisa."
-            )
+            await self.session.close()
 
 
 # ============================================================
-# GET EXISTING URL FROM D1
+# D1 DOCUMENT SQL
 # ============================================================
 
-def get_already_visited_urls_d1():
+DOCUMENT_SQL = """
+INSERT INTO documents (
+    url,
+    domain,
+    title,
+    snippet,
+    favicon,
+    thumbnail,
+    last_modified,
+    content_hash,
+    language
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(url) DO UPDATE SET
+    domain = excluded.domain,
+    title = excluded.title,
+    snippet = excluded.snippet,
+    favicon = excluded.favicon,
+    thumbnail = excluded.thumbnail,
+    last_modified = excluded.last_modified,
+    content_hash = excluded.content_hash,
+    language = excluded.language
+"""
 
-    """
-    Mengambil URL yang sudah ada di D1.
 
-    Tujuannya agar crawler tidak mulai dari nol
-    setiap kali GitHub Actions dijalankan.
-    """
-
-    visited = set()
-
-    print(
-        "\n[CLOUDFLARE SYNC] "
-        "Mengambil daftar URL lama dari D1..."
-    )
-
-    queries = [
-        {
-            "sql": (
-                "SELECT url "
-                "FROM documents"
-            )
-        }
-    ]
-
-    try:
-
-        data = execute_d1_queries(
-            queries
-        )
-
-        if not isinstance(
-            data,
-            dict
-        ):
-
-            print(
-                "[CLOUDFLARE SYNC ERROR] "
-                "Response D1 tidak valid."
-            )
-
-            return visited
-
-        if not data.get(
-            "success",
-            False
-        ):
-
-            print(
-                "[CLOUDFLARE SYNC ERROR] "
-                "Query D1 gagal:"
-            )
-
-            print(data)
-
-            return visited
-
-        results = []
-
-        # ----------------------------------------------------
-        # Response D1 biasanya:
-        #
-        # result: [
-        #   {
-        #       "results": [...]
-        #   }
-        # ]
-        # ----------------------------------------------------
-
-        raw_result = data.get(
-            "result",
-            []
-        )
-
-        if isinstance(
-            raw_result,
-            list
-        ):
-
-            for result_item in raw_result:
-
-                if not isinstance(
-                    result_item,
-                    dict
-                ):
-                    continue
-
-                rows = result_item.get(
-                    "results",
-                    []
-                )
-
-                if isinstance(
-                    rows,
-                    list
-                ):
-
-                    results.extend(
-                        rows
-                    )
-
-        # ----------------------------------------------------
-        # NORMALIZE URL
-        # ----------------------------------------------------
-
-        for row in results:
-
-            if not isinstance(
-                row,
-                dict
-            ):
-                continue
-
-            url_val = row.get(
-                "url"
-            )
-
-            if not url_val:
-                continue
-
-            try:
-
-                parsed = urlparse(
-                    url_val
-                )
-
-                if (
-                    parsed.scheme
-                    not in (
-                        "http",
-                        "https"
-                    )
-                    or
-                    not parsed.netloc
-                ):
-                    continue
-
-                clean = (
-                    f"{parsed.scheme.lower()}"
-                    f"://"
-                    f"{parsed.netloc.lower()}"
-                    f"{parsed.path or '/'}"
-                )
-
-                root = (
-                    f"{parsed.scheme.lower()}"
-                    f"://"
-                    f"{parsed.netloc.lower()}/"
-                )
-
-                if (
-                    len(clean) > len(root)
-                    and clean.endswith("/")
-                ):
-
-                    clean = clean[:-1]
-
-                visited.add(
-                    clean
-                )
-
-            except Exception:
-                continue
-
-        print(
-            "[CLOUDFLARE SYNC DONE] "
-            f"Terbaca: {len(visited)} "
-            "URL lama berhasil "
-            "disinkronisasi!"
-        )
-
-    except Exception as e:
-
-        print(
-            "[CLOUDFLARE SYNC WARNING] "
-            f"Exception: {e}"
-        )
-
-    return visited
+GRAPH_SQL = """
+INSERT INTO page_graph (
+    source_url,
+    target_url
+)
+VALUES (?, ?)
+ON CONFLICT(source_url, target_url)
+DO NOTHING
+"""
 
 
 # ============================================================
-# PUSH DOCUMENTS TO D1
+# D1 UPLOAD
 # ============================================================
 
-def push_to_d1(
-    crawled_data,
-    graph_data,
-    batch_size=D1_BATCH_SIZE
-):
-
-    print(
-        "\n[CLOUDFLARE PUSH] "
-        f"Memulai upload "
-        f"{len(crawled_data)} "
-        "dokumen ke D1..."
-    )
-
-    if not crawled_data:
-
+def upload_documents_to_d1():
+    if not documents:
         print(
-            "[CLOUDFLARE PUSH] "
-            "Tidak ada dokumen baru."
+            "[D1] Tidak ada document baru."
         )
-
         return
 
-    # --------------------------------------------------------
-    # DOCUMENT CHUNKS
-    # --------------------------------------------------------
+    total = len(documents)
 
-    chunks = [
-        crawled_data[
-            i:i + batch_size
-        ]
-        for i in range(
-            0,
-            len(crawled_data),
-            batch_size
-        )
-    ]
+    print(
+        f"[CLOUDFLARE PUSH] "
+        f"Memulai upload {total:,} dokumen ke D1..."
+    )
 
-    success_docs = 0
+    success_count = 0
 
-    # --------------------------------------------------------
-    # DOCUMENT BATCHES
-    # --------------------------------------------------------
-
-    for chunk_idx, chunk in enumerate(
-        chunks
+    for start in range(
+        0,
+        total,
+        D1_BATCH_SIZE,
     ):
 
-        queries = []
+        if time_exceeded():
 
-        for page in chunk:
+            print(
+                "[D1] Batas waktu tercapai "
+                "saat upload documents."
+            )
 
-            queries.append(
+            break
+
+        chunk = documents[
+            start:start + D1_BATCH_SIZE
+        ]
+
+        batch = []
+
+        for doc in chunk:
+
+            batch.append(
                 {
-                    "sql": """
-                        INSERT INTO documents (
-                            url,
-                            domain,
-                            title,
-                            snippet,
-                            favicon,
-                            thumbnail,
-                            created_at,
-                            last_modified,
-                            content_hash,
-                            language
-                        )
-                        VALUES (
-                            ?,
-                            ?,
-                            ?,
-                            ?,
-                            ?,
-                            ?,
-                            CURRENT_TIMESTAMP,
-                            ?,
-                            ?,
-                            ?
-                        )
-                        ON CONFLICT(url)
-                        DO UPDATE SET
-                            title = excluded.title,
-                            snippet = excluded.snippet,
-                            favicon = excluded.favicon,
-                            thumbnail = excluded.thumbnail,
-                            language = excluded.language,
-                            last_modified =
-                                CASE
-                                    WHEN
-                                        excluded.content_hash
-                                        != documents.content_hash
-                                    THEN CURRENT_TIMESTAMP
-
-                                    ELSE COALESCE(
-                                        excluded.last_modified,
-                                        documents.last_modified
-                                    )
-                                END,
-                            content_hash =
-                                excluded.content_hash;
-                    """,
-
+                    "sql": DOCUMENT_SQL,
                     "params": [
-                        page.get("url"),
-                        page.get("domain"),
-                        page.get("title"),
-                        page.get("snippet"),
-                        page.get("favicon"),
-                        page.get("thumbnail"),
-                        page.get("last_modified"),
-                        page.get("content_hash"),
-                        page.get("language")
-                    ]
+                        doc["url"],
+                        doc["domain"],
+                        doc["title"],
+                        doc["snippet"],
+                        doc["favicon"],
+                        doc["thumbnail"],
+                        doc["last_modified"],
+                        doc["content_hash"],
+                        doc["language"],
+                    ],
                 }
             )
 
         try:
 
-            res = execute_d1_queries(
-                queries
-            )
+            d1_request(batch)
 
-            if (
-                isinstance(res, dict)
-                and
-                res.get(
-                    "success",
-                    False
-                )
-            ):
-
-                success_docs += len(chunk)
-
-                print(
-                    "[CLOUDFLARE PUSH] "
-                    f"Batch Dokumen "
-                    f"{chunk_idx + 1}/"
-                    f"{len(chunks)} OK "
-                    f"({len(chunk)} dokumen)"
-                )
-
-            else:
-
-                print(
-                    "[CLOUDFLARE PUSH ERROR] "
-                    f"Batch "
-                    f"{chunk_idx + 1}/"
-                    f"{len(chunks)} gagal:"
-                )
-
-                print(res)
-
-        except Exception as e:
+            success_count += len(chunk)
 
             print(
-                "[CLOUDFLARE PUSH ERROR] "
-                f"Batch Dokumen "
-                f"{chunk_idx + 1} "
-                f"exception: {e}"
+                "[D1 DOCUMENTS] "
+                f"{success_count:,}/{total:,}"
             )
 
-    # ========================================================
-    # GRAPH
-    # ========================================================
+        except Exception as exc:
+
+            print(
+                f"[D1 DOCUMENT ERROR] "
+                f"Batch "
+                f"{start // D1_BATCH_SIZE + 1}"
+                f"/"
+                f"{(total + D1_BATCH_SIZE - 1) // D1_BATCH_SIZE}"
+                f" gagal:"
+            )
+
+            print(exc)
+
+            # Jangan terus menghabiskan quota
+            # dengan retry batch yang sama berkali-kali.
+            print(
+                "[D1] Upload documents dihentikan "
+                "setelah batch gagal."
+            )
+
+            return
 
     print(
-        "\n[CLOUDFLARE PUSH] "
-        "Menyimpan struktur graph link..."
+        f"[CLOUDFLARE PUSH] "
+        f"Documents berhasil diproses: "
+        f"{success_count:,}/{total:,}"
     )
 
-    graph_queries = []
 
-    for source, targets in (
-        graph_data.items()
+def upload_graph_to_d1():
+    if not graph_edges:
+        print(
+            "[D1] Tidak ada graph edge baru."
+        )
+        return
+
+    total = len(graph_edges)
+
+    print(
+        f"[CLOUDFLARE PUSH] "
+        f"Memulai upload {total:,} graph edges..."
+    )
+
+    success_count = 0
+
+    for start in range(
+        0,
+        total,
+        D1_BATCH_SIZE,
     ):
 
-        if not source:
-            continue
+        if time_exceeded():
 
-        if not isinstance(
-            targets,
-            list
-        ):
-            continue
+            print(
+                "[D1] Batas waktu tercapai "
+                "saat upload graph."
+            )
 
-        for target in targets:
+            break
 
-            if not target:
-                continue
+        chunk = graph_edges[
+            start:start + D1_BATCH_SIZE
+        ]
 
-            if source == target:
-                continue
+        batch = []
 
-            graph_queries.append(
+        for edge in chunk:
+
+            batch.append(
                 {
-                    "sql": """
-                        INSERT INTO page_graph (
-                            source_url,
-                            target_url
-                        )
-                        VALUES (?, ?)
-                        ON CONFLICT(
-                            source_url,
-                            target_url
-                        )
-                        DO NOTHING;
-                    """,
-
+                    "sql": GRAPH_SQL,
                     "params": [
-                        source,
-                        target
-                    ]
+                        edge["source_url"],
+                        edge["target_url"],
+                    ],
                 }
             )
 
-    # --------------------------------------------------------
-    # GRAPH CHUNKS
-    # --------------------------------------------------------
-
-    graph_chunks = [
-        graph_queries[
-            i:i + D1_GRAPH_BATCH_SIZE
-        ]
-        for i in range(
-            0,
-            len(graph_queries),
-            D1_GRAPH_BATCH_SIZE
-        )
-    ]
-
-    graph_success = 0
-
-    for i, g_chunk in enumerate(
-        graph_chunks
-    ):
-
         try:
 
-            result = execute_d1_queries(
-                g_chunk
-            )
+            d1_request(batch)
 
-            if (
-                isinstance(result, dict)
-                and
-                result.get(
-                    "success",
-                    False
-                )
-            ):
-
-                graph_success += len(
-                    g_chunk
-                )
-
-                print(
-                    "[CLOUDFLARE GRAPH] "
-                    f"Batch "
-                    f"{i + 1}/"
-                    f"{len(graph_chunks)} OK"
-                )
-
-            else:
-
-                print(
-                    "[CLOUDFLARE GRAPH ERROR] "
-                    f"Batch "
-                    f"{i + 1}/"
-                    f"{len(graph_chunks)} gagal:"
-                )
-
-                print(result)
-
-        except Exception as e:
+            success_count += len(chunk)
 
             print(
-                "[CLOUDFLARE GRAPH ERROR] "
-                f"Batch {i + 1} "
-                f"exception: {e}"
+                "[D1 GRAPH] "
+                f"{success_count:,}/{total:,}"
             )
 
-    # --------------------------------------------------------
-    # FINISH
-    # --------------------------------------------------------
+        except Exception as exc:
+
+            print(
+                f"[D1 GRAPH ERROR] "
+                f"Batch "
+                f"{start // D1_BATCH_SIZE + 1}"
+                f"/"
+                f"{(total + D1_BATCH_SIZE - 1) // D1_BATCH_SIZE}"
+                f" gagal:"
+            )
+
+            print(exc)
+
+            print(
+                "[D1] Upload graph dihentikan "
+                "setelah batch gagal."
+            )
+
+            return
 
     print(
-        "\n[CLOUDFLARE FINISH] "
-        f"Selesai!"
+        f"[CLOUDFLARE PUSH] "
+        f"Graph berhasil diproses: "
+        f"{success_count:,}/{total:,}"
     )
 
-    print(
-        f"Dokumen berhasil diproses: "
-        f"{success_docs}/{len(crawled_data)}"
-    )
 
-    print(
-        f"Relasi graph diproses: "
-        f"{graph_success}/{len(graph_queries)}"
-    )
+# ============================================================
+# SEEDS
+# ============================================================
+
+SEEDS = [
+    "https://www.google.com",
+    "https://www.google.co.id",
+    "https://duckduckgo.com",
+    "https://www.bing.com",
+
+    "https://id.wikipedia.org",
+    "https://en.wikipedia.org",
+
+    "https://www.kompas.com",
+    "https://www.detik.com",
+    "https://www.liputan6.com",
+    "https://www.tribunnews.com",
+    "https://www.cnnindonesia.com",
+    "https://www.tempo.co",
+    "https://www.cnbcindonesia.com",
+    "https://www.bbc.com",
+
+    "https://www.theverge.com",
+    "https://techcrunch.com",
+
+    "https://github.com",
+    "https://stackoverflow.com",
+    "https://developer.mozilla.org",
+    "https://dev.to",
+    "https://news.ycombinator.com",
+
+    "https://www.minecraft.net",
+    "https://store.steampowered.com",
+    "https://m.mobilelegends.com",
+    "https://ff.garena.com",
+    "https://www.hltv.org",
+    "https://liquipedia.net",
+
+    "https://id.quora.com",
+    "https://www.reddit.com",
+
+    "https://indonesia.go.id",
+    "https://www.kemdikbud.go.id",
+    "https://www.kominfo.go.id",
+    "https://www.bps.go.id",
+
+    "https://www.ui.ac.id",
+    "https://www.itb.ac.id",
+
+    "https://www.behance.net",
+    "https://dribbble.com",
+    "https://id.pinterest.com",
+]
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
-if __name__ == "__main__":
+def main():
 
-    # ========================================================
-    # SEED URLS
-    # ========================================================
+    global START_TIME
 
-    initial_seeds = [
+    START_TIME = time.monotonic()
 
-        "https://www.google.com",
+    print("=" * 60)
+    print("DEEVV SEARCH CRAWLER")
+    print("=" * 60)
 
-        "https://www.google.co.id",
+    print(
+        f"MAX RUN      : {MAX_RUN_SECONDS}s"
+    )
 
-        "https://duckduckgo.com",
+    print(
+        f"CONCURRENCY  : {CONCURRENCY}"
+    )
 
-        "https://www.bing.com",
+    print(
+        f"D1 BATCH     : {D1_BATCH_SIZE}"
+    )
 
-        "https://id.wikipedia.org",
+    print("=" * 60)
 
-        "https://en.wikipedia.org",
+    # --------------------------------------------------------
+    # Validasi environment SAJA.
+    # Tidak melakukan request ke Cloudflare.
+    # --------------------------------------------------------
 
-        "https://www.kompas.com",
-
-        "https://www.detik.com",
-
-        "https://www.liputan6.com",
-
-        "https://www.tribunnews.com",
-
-        "https://www.cnnindonesia.com",
-
-        "https://www.tempo.co",
-
-        "https://www.cnbcindonesia.com",
-
-        "https://www.bbc.com",
-
-        "https://www.theverge.com",
-
-        "https://techcrunch.com",
-
-        "https://github.com",
-
-        "https://stackoverflow.com",
-
-        "https://developer.mozilla.org",
-
-        "https://dev.to",
-
-        "https://news.ycombinator.com",
-
-        "https://www.minecraft.net",
-
-        "https://store.steampowered.com",
-
-        "https://m.mobilelegends.com",
-
-        "https://ff.garena.com",
-
-        "https://www.hltv.org",
-
-        "https://liquipedia.net",
-
-        "https://id.quora.com",
-
-        "https://www.reddit.com",
-
-        "https://indonesia.go.id",
-
-        "https://www.kemdikbud.go.id",
-
-        "https://www.kominfo.go.id",
-
-        "https://www.bps.go.id",
-
-        "https://www.ui.ac.id",
-
-        "https://www.itb.ac.id",
-
-        "https://www.behance.net",
-
-        "https://dribbble.com",
-
-        "https://id.pinterest.com",
+    required = [
+        "CF_ACCOUNT_ID",
+        "CF_D1_DATABASE_ID",
+        "CF_API_TOKEN",
     ]
 
-    # ========================================================
-    # CHECK ENVIRONMENT
-    # ========================================================
+    missing = [
+        key
+        for key in required
+        if not os.getenv(key)
+    ]
 
-    print("=" * 60)
-
-    print(
-        "DEEVV SEARCH - PROFESSIONAL WEB CRAWLER"
-    )
-
-    print("=" * 60)
-
-    if not CF_ACCOUNT_ID:
+    if missing:
 
         print(
-            "[CRITICAL] "
-            "CF_ACCOUNT_ID tidak ditemukan."
+            "[FATAL] Environment variable "
+            "belum lengkap:"
         )
+
+        for key in missing:
+            print(f" - {key}")
 
         sys.exit(1)
 
-    if not CF_D1_DATABASE_ID:
-
-        print(
-            "[CRITICAL] "
-            "CF_D1_DATABASE_ID tidak ditemukan."
-        )
-
-        sys.exit(1)
-
-    if not CF_API_TOKEN:
-
-        print(
-            "[CRITICAL] "
-            "CF_API_TOKEN tidak ditemukan."
-        )
-
-        sys.exit(1)
-
-    print(
-        "[CONFIG] Cloudflare D1 credentials: OK"
-    )
-
-    print(
-        "[CONFIG] Maximum crawler runtime: "
-        "3600 seconds (1 hour)"
-    )
-
-    print(
-        f"[CONFIG] Concurrency: "
-        f"{CONCURRENCY}"
-    )
-
-    print(
-        f"[CONFIG] Max pages/domain: "
-        f"{MAX_PAGES_PER_DOMAIN}"
-    )
-
-    # ========================================================
-    # SYNC OLD URLS
-    # ========================================================
+    # --------------------------------------------------------
+    # SATU-SATUNYA READ D1
+    # --------------------------------------------------------
 
     existing_urls = (
         get_already_visited_urls_d1()
     )
 
-    print(
-        f"\n[SYNC] "
-        f"{len(existing_urls)} URL "
-        "lama ditemukan di D1."
-    )
-
-    # ========================================================
-    # CREATE CRAWLER
-    # ========================================================
+    # --------------------------------------------------------
+    # CRAWL
+    # --------------------------------------------------------
 
     crawler = ProfessionalSearchCrawler(
-        seed_urls=initial_seeds,
-
-        # HARD LIMIT 1 JAM
-        max_run_seconds=3600,
-
-        concurrency=15
-    )
-
-    # ========================================================
-    # IMPORTANT:
-    #
-    # URL yang sudah ada di D1 dimasukkan ke visited_urls.
-    #
-    # Dengan begitu crawler tidak mengcrawl ulang
-    # halaman yang sudah tersimpan.
-    # ========================================================
-
-    crawler.visited_urls.update(
         existing_urls
     )
-
-    print(
-        "\n[START CRAWLER] "
-        "Memulai perayapan web D1..."
-    )
-
-    print(
-        "[START CRAWLER] "
-        "Batas maksimum: 1 JAM"
-    )
-
-    print(
-        "[START CRAWLER] "
-        "URL lama yang dilewati: "
-        f"{len(existing_urls)}"
-    )
-
-    # ========================================================
-    # RUN
-    # ========================================================
 
     try:
 
         asyncio.run(
-            crawler.run()
+            crawler.run(SEEDS)
         )
 
     except KeyboardInterrupt:
 
         print(
-            "\n[STOP] "
-            "Crawler dihentikan manual."
+            "[CRAWLER] Dihentikan."
         )
 
-    except Exception as e:
+    except Exception as exc:
 
         print(
-            "\n[CRITICAL CRAWLER ERROR]"
+            f"[FATAL CRAWLER ERROR] {exc}"
         )
 
-        print(e)
+        return
 
-    # ========================================================
-    # COLLECT RESULTS
-    # ========================================================
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
 
-    crawled_results = list(
-        crawler.pages_data.values()
-    )
-
-    graph_results = crawler.graph
-
-    # ========================================================
-    # UPLOAD TO D1
-    # ========================================================
-
-    if crawled_results:
-
-        print(
-            "\n[POST-CRAWL] "
-            f"Ditemukan "
-            f"{len(crawled_results)} "
-            "halaman hasil crawling."
-        )
-
-        push_to_d1(
-            crawled_results,
-            graph_results
-        )
-
-    else:
-
-        print(
-            "\n[INFO] "
-            "Tidak ada halaman baru "
-            "yang berhasil dicrawl."
-        )
-
-        print(
-            "[INFO] "
-            "Upload D1 dilewati."
-        )
-
-    # ========================================================
-    # FINAL
-    # ========================================================
+    print()
+    print("=" * 60)
+    print("CRAWL SELESAI")
+    print("=" * 60)
 
     print(
-        "\n" + "=" * 60
+        f"Documents : {len(documents):,}"
     )
 
     print(
-        "CRAWLER SELESAI"
+        f"Graph     : {len(graph_edges):,}"
     )
 
     print(
-        "=" * 60
+        f"Crawled   : {stats['crawled']:,}"
     )
 
     print(
-        f"Total halaman baru: "
-        f"{len(crawled_results)}"
+        f"Errors    : {stats['errors']:,}"
     )
 
     print(
-        f"Total graph source: "
-        f"{len(graph_results)}"
+        f"Elapsed   : {elapsed_seconds()}s"
     )
 
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # UPLOAD DOCUMENTS
+    # --------------------------------------------------------
+
+    if documents:
+
+        upload_documents_to_d1()
+
+    # --------------------------------------------------------
+    # UPLOAD GRAPH
+    # --------------------------------------------------------
+
+    if graph_edges:
+
+        upload_graph_to_d1()
+
+    print()
     print(
-        f"Waktu crawler: "
-        f"{crawler.elapsed_seconds()} detik"
+        "[DONE] Semua proses selesai."
     )
 
-    print(
-        "=" * 60
-    )
+
+if __name__ == "__main__":
+    main()
