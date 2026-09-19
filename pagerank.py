@@ -2,486 +2,491 @@ import os
 import sys
 import time
 import requests
-import networkx as nx
+from collections import defaultdict
 
+# ============================================================
+# DEEVV SEARCH - PAGERANK
+# Pure Python - TANPA NumPy / SciPy
+# ============================================================
+
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
+CF_D1_DATABASE_ID = os.environ.get("CF_D1_DATABASE_ID", "").strip()
+CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "").strip()
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-D1_BATCH_SIZE = 50
-D1_REQUEST_TIMEOUT = 60
-D1_RETRY_COUNT = 3
+BATCH_SIZE = 50
 
-# PageRank settings
-PAGERANK_ALPHA = 0.85
-PAGERANK_MAX_ITER = 100
-PAGERANK_TOL = 1.0e-6
+ALPHA = 0.85
+MAX_ITER = 100
+TOLERANCE = 1.0e-6
 
-# Hanya update URL yang benar-benar memiliki PageRank.
-# Tidak membuat / mengubah tabel apa pun.
-UPDATE_SQL = """
-UPDATE documents
-SET pagerank = ?
-WHERE url = ?
-"""
-
+D1_TIMEOUT = 30
+D1_RETRIES = 2
 
 # ============================================================
-# CLOUDFLARE ENV
+# D1
 # ============================================================
 
-CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID")
-CF_D1_DATABASE_ID = os.getenv("CF_D1_DATABASE_ID")
-CF_API_TOKEN = os.getenv("CF_API_TOKEN")
-
-
-# ============================================================
-# VALIDATE ENV
-# ============================================================
-
-def validate_environment():
-
-    required = [
-        "CF_ACCOUNT_ID",
-        "CF_D1_DATABASE_ID",
-        "CF_API_TOKEN",
-    ]
-
-    missing = [
-        key
-        for key in required
-        if not os.getenv(key)
-    ]
-
-    if missing:
-
-        print(
-            "[FATAL] Environment variable "
-            "belum lengkap:"
-        )
-
-        for key in missing:
-            print(f" - {key}")
-
-        sys.exit(1)
-
-
-# ============================================================
-# D1 API
-# ============================================================
-
-def get_d1_api_url():
-
+def d1_url():
     return (
-        "https://api.cloudflare.com/client/v4/"
-        f"accounts/{CF_ACCOUNT_ID}/"
-        f"d1/database/{CF_D1_DATABASE_ID}/query"
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{CF_ACCOUNT_ID}/d1/database/{CF_D1_DATABASE_ID}/query"
     )
 
 
-def d1_request(batch):
+def check_config():
+    missing = []
 
-    url = get_d1_api_url()
+    if not CF_ACCOUNT_ID:
+        missing.append("CF_ACCOUNT_ID")
+
+    if not CF_D1_DATABASE_ID:
+        missing.append("CF_D1_DATABASE_ID")
+
+    if not CF_API_TOKEN:
+        missing.append("CF_API_TOKEN")
+
+    if missing:
+        raise RuntimeError(
+            "Secret GitHub Actions belum lengkap: "
+            + ", ".join(missing)
+        )
+
+
+def d1_request(payload):
+    """
+    D1 REST API.
+
+    Hanya retry error transient:
+    - network error
+    - 408
+    - 429
+    - 5xx
+
+    Error 400/SQL/schema TIDAK di-retry
+    supaya tidak membuang quota.
+    """
 
     headers = {
         "Authorization": f"Bearer {CF_API_TOKEN}",
         "Content-Type": "application/json",
     }
 
-    payload = {
-        "batch": batch
-    }
-
     last_error = None
 
-    for attempt in range(
-        1,
-        D1_RETRY_COUNT + 1,
-    ):
-
+    for attempt in range(D1_RETRIES + 1):
         try:
-
             response = requests.post(
-                url,
+                d1_url(),
                 headers=headers,
                 json=payload,
-                timeout=D1_REQUEST_TIMEOUT,
+                timeout=D1_TIMEOUT,
             )
+
+            status = response.status_code
 
             try:
                 data = response.json()
-
             except Exception:
+                data = None
 
-                data = {
-                    "success": False,
-                    "errors": [
-                        {
-                            "message": response.text[:1000]
-                        }
-                    ],
-                }
+            # -----------------------------
+            # SUCCESS
+            # -----------------------------
 
-            if response.status_code != 200:
+            if 200 <= status < 300:
+                if data and data.get("success") is True:
+                    return data
 
-                last_error = (
-                    f"HTTP {response.status_code}: "
-                    f"{data}"
+                raise RuntimeError(
+                    "D1 mengembalikan HTTP sukses tetapi "
+                    f"success=false/tidak valid:\n{response.text[:2000]}"
                 )
 
-                print(
-                    f"[D1 ERROR] "
-                    f"Attempt {attempt}/"
-                    f"{D1_RETRY_COUNT}: "
-                    f"{last_error}"
+            # -----------------------------
+            # TRANSIENT ERROR
+            # -----------------------------
+
+            if status in (408, 429) or 500 <= status <= 599:
+                last_error = RuntimeError(
+                    f"D1 HTTP {status}: {response.text[:2000]}"
                 )
 
-                if attempt < D1_RETRY_COUNT:
-                    time.sleep(
-                        min(2 * attempt, 5)
+                if attempt < D1_RETRIES:
+                    wait_seconds = 2 ** attempt
+
+                    print(
+                        f"[D1] Error transient HTTP {status}. "
+                        f"Retry {attempt + 1}/{D1_RETRIES} "
+                        f"dalam {wait_seconds}s..."
                     )
 
-                continue
+                    time.sleep(wait_seconds)
+                    continue
 
-            if not data.get(
-                "success",
-                False,
-            ):
+                raise last_error
 
-                last_error = str(
-                    data.get("errors")
-                )
+            # -----------------------------
+            # PERMANENT ERROR
+            # JANGAN RETRY
+            # -----------------------------
 
-                print(
-                    f"[D1 ERROR] "
-                    f"Attempt {attempt}/"
-                    f"{D1_RETRY_COUNT}: "
-                    f"{last_error}"
-                )
-
-                if attempt < D1_RETRY_COUNT:
-                    time.sleep(
-                        min(2 * attempt, 5)
-                    )
-
-                continue
-
-            return data
-
-        except requests.RequestException as exc:
-
-            last_error = str(exc)
-
-            print(
-                f"[D1 NETWORK ERROR] "
-                f"Attempt {attempt}/"
-                f"{D1_RETRY_COUNT}: "
-                f"{exc}"
+            raise RuntimeError(
+                f"D1 HTTP {status}: {response.text[:4000]}"
             )
 
-            if attempt < D1_RETRY_COUNT:
-                time.sleep(
-                    min(2 * attempt, 5)
+        except requests.RequestException as exc:
+            last_error = exc
+
+            if attempt < D1_RETRIES:
+                wait_seconds = 2 ** attempt
+
+                print(
+                    f"[D1] Network error. "
+                    f"Retry {attempt + 1}/{D1_RETRIES} "
+                    f"dalam {wait_seconds}s..."
                 )
 
+                time.sleep(wait_seconds)
+                continue
+
+            raise RuntimeError(
+                f"D1 request gagal: {exc}"
+            ) from exc
+
     raise RuntimeError(
-        "D1 request gagal setelah "
-        f"{D1_RETRY_COUNT} percobaan: "
-        f"{last_error}"
+        f"D1 request gagal: {last_error}"
     )
 
 
 # ============================================================
-# LOAD GRAPH FROM D1
+# GET PAGE GRAPH
 # ============================================================
 
-def load_page_graph():
+def get_page_graph():
+    print("[D1] Mengambil page_graph...")
 
-    print(
-        "[D1] Mengambil page_graph..."
-    )
+    payload = {
+        "sql": """
+            SELECT source_url, target_url
+            FROM page_graph
+            WHERE source_url IS NOT NULL
+              AND target_url IS NOT NULL
+        """
+    }
 
-    batch = [
-        {
-            "sql": """
-                SELECT source_url, target_url
-                FROM page_graph
-            """,
-            "params": [],
-        }
-    ]
+    data = d1_request(payload)
 
-    data = d1_request(batch)
-
-    results = data.get(
-        "result",
-        []
-    )
+    results = data.get("result", [])
 
     if not results:
         return []
 
-    rows = results[0].get(
-        "results",
-        []
-    )
+    rows = results[0].get("results", [])
 
-    print(
-        f"[D1] Graph edges: "
-        f"{len(rows):,}"
-    )
+    edges = []
 
-    return rows
+    for row in rows:
+        source = row.get("source_url")
+        target = row.get("target_url")
+
+        if not source or not target:
+            continue
+
+        source = str(source).strip()
+        target = str(target).strip()
+
+        if not source or not target:
+            continue
+
+        # Buang self-link
+        if source == target:
+            continue
+
+        edges.append((source, target))
+
+    return edges
 
 
 # ============================================================
 # BUILD GRAPH
 # ============================================================
 
-def build_graph(rows):
+def build_graph(edges):
+    """
+    Membuat graph directed sederhana.
 
-    print(
-        "[PAGERANK] Membuat graph..."
-    )
+    outgoing[source] = set/list target
+    incoming[target] = set/list source
 
-    graph = nx.DiGraph()
+    Tidak menggunakan NetworkX.
+    Tidak menggunakan NumPy.
+    Tidak menggunakan SciPy.
+    """
 
-    for row in rows:
+    outgoing = defaultdict(set)
+    incoming = defaultdict(set)
 
-        source = row.get(
-            "source_url"
-        )
+    nodes = set()
 
-        target = row.get(
-            "target_url"
-        )
+    for source, target in edges:
+        nodes.add(source)
+        nodes.add(target)
 
-        if not source or not target:
-            continue
+        outgoing[source].add(target)
+        incoming[target].add(source)
 
-        if source == target:
-            continue
+    # Pastikan node tanpa outgoing tetap ada
+    for node in nodes:
+        outgoing[node]
 
-        graph.add_edge(
-            source,
-            target,
-        )
-
-    print(
-        f"[PAGERANK] Nodes : "
-        f"{graph.number_of_nodes():,}"
-    )
-
-    print(
-        f"[PAGERANK] Edges : "
-        f"{graph.number_of_edges():,}"
-    )
-
-    return graph
+    return nodes, outgoing, incoming
 
 
 # ============================================================
-# CALCULATE PAGERANK
+# PURE PYTHON PAGERANK
 # ============================================================
 
-def calculate_pagerank(graph):
+def calculate_pagerank(nodes, outgoing):
+    """
+    PageRank menggunakan power iteration pure Python.
 
-    if graph.number_of_nodes() == 0:
+    Rumus:
 
-        print(
-            "[PAGERANK] Graph kosong."
-        )
+        PR(v) =
+            (1-alpha)/N
+            +
+            alpha * jumlah(PR(u) / out_degree(u))
 
+    Untuk dangling node (tidak punya outgoing link),
+    rank-nya didistribusikan ke semua node.
+    """
+
+    print("[PAGERANK] Menghitung PageRank...")
+    print(f"[PAGERANK] alpha = {ALPHA}")
+    print(f"[PAGERANK] max_iter = {MAX_ITER}")
+    print(f"[PAGERANK] tolerance = {TOLERANCE}")
+    print("[PAGERANK] Mode = PURE PYTHON")
+    print("[PAGERANK] NumPy = TIDAK DIPAKAI")
+    print("[PAGERANK] SciPy = TIDAK DIPAKAI")
+
+    node_list = list(nodes)
+
+    n = len(node_list)
+
+    if n == 0:
         return {}
 
-    print(
-        "[PAGERANK] Menghitung PageRank..."
-    )
+    initial_rank = 1.0 / n
 
-    print(
-        f"[PAGERANK] alpha = "
-        f"{PAGERANK_ALPHA}"
-    )
+    ranks = {
+        node: initial_rank
+        for node in node_list
+    }
 
-    print(
-        f"[PAGERANK] max_iter = "
-        f"{PAGERANK_MAX_ITER}"
-    )
+    teleport = (1.0 - ALPHA) / n
 
-    try:
+    for iteration in range(1, MAX_ITER + 1):
 
-        scores = nx.pagerank(
-            graph,
-            alpha=PAGERANK_ALPHA,
-            max_iter=PAGERANK_MAX_ITER,
-            tol=PAGERANK_TOL,
-        )
+        # ----------------------------------------------------
+        # Total rank dari dangling nodes
+        # ----------------------------------------------------
 
-    except nx.PowerIterationFailedConvergence:
+        dangling_rank = 0.0
 
+        for node in node_list:
+            if not outgoing[node]:
+                dangling_rank += ranks[node]
+
+        dangling_share = ALPHA * dangling_rank / n
+
+        # ----------------------------------------------------
+        # Rank baru
+        # ----------------------------------------------------
+
+        new_ranks = {}
+
+        for node in node_list:
+            new_rank = teleport + dangling_share
+
+            # Semua incoming node
+            # akan memberi kontribusi ke node ini.
+            #
+            # Kita tidak menyimpan incoming map di sini karena
+            # graph kecil dan metode ini lebih sederhana.
+            #
+            # Namun untuk performa kita gunakan incoming map
+            # dari global cache di bawah.
+            new_ranks[node] = new_rank
+
+        # ----------------------------------------------------
+        # Distribusi incoming links
+        # ----------------------------------------------------
+
+        for source in node_list:
+
+            targets = outgoing[source]
+
+            if not targets:
+                continue
+
+            contribution = ALPHA * ranks[source] / len(targets)
+
+            for target in targets:
+                new_ranks[target] += contribution
+
+        # ----------------------------------------------------
+        # Cek konvergensi
+        # ----------------------------------------------------
+
+        error = 0.0
+
+        for node in node_list:
+            error += abs(
+                new_ranks[node] - ranks[node]
+            )
+
+        ranks = new_ranks
+
+        if iteration == 1 or iteration % 5 == 0:
+            print(
+                f"[PAGERANK] Iterasi {iteration}/{MAX_ITER} "
+                f"| error = {error:.10f}"
+            )
+
+        if error < TOLERANCE:
+            print(
+                f"[PAGERANK] Konvergen pada iterasi "
+                f"{iteration}"
+            )
+            print(
+                f"[PAGERANK] Final error = "
+                f"{error:.10f}"
+            )
+            break
+
+    else:
         print(
-            "[PAGERANK] Konvergensi belum "
-            "tercapai dengan parameter normal."
+            "[PAGERANK] Mencapai MAX_ITER tanpa "
+            "konvergen penuh."
         )
-
         print(
-            "[PAGERANK] Mencoba iterasi lebih tinggi..."
+            f"[PAGERANK] Final error = {error:.10f}"
         )
 
-        scores = nx.pagerank(
-            graph,
-            alpha=PAGERANK_ALPHA,
-            max_iter=300,
-            tol=PAGERANK_TOL,
-        )
+    # --------------------------------------------------------
+    # Normalisasi akhir
+    # --------------------------------------------------------
 
-    print(
-        f"[PAGERANK] "
-        f"{len(scores):,} score berhasil dihitung."
-    )
+    total = sum(ranks.values())
 
-    return scores
+    if total > 0:
+        for node in ranks:
+            ranks[node] /= total
+
+    return ranks
 
 
 # ============================================================
 # UPDATE D1
 # ============================================================
 
-def update_pagerank_to_d1(scores):
+def update_pagerank(scores):
+    """
+    Update pagerank ke documents.
+
+    Menggunakan D1 batch.
+    Tidak ada test query.
+
+    50 UPDATE = 1 request D1.
+    """
 
     if not scores:
-
-        print(
-            "[D1] Tidak ada PageRank untuk di-update."
-        )
-
+        print("[D1] Tidak ada score untuk di-update.")
         return
 
-    items = list(
-        scores.items()
-    )
-
-    total = len(items)
+    items = list(scores.items())
 
     print(
-        f"[CLOUDFLARE PUSH] "
-        f"Mengupdate {total:,} PageRank..."
+        f"[D1] Mengupdate {len(items):,} PageRank..."
     )
-
-    success_count = 0
 
     total_batches = (
-        total + D1_BATCH_SIZE - 1
-    ) // D1_BATCH_SIZE
+        len(items) + BATCH_SIZE - 1
+    ) // BATCH_SIZE
 
-    for start in range(
-        0,
-        total,
-        D1_BATCH_SIZE,
-    ):
+    completed = 0
 
-        chunk = items[
-            start:start + D1_BATCH_SIZE
-        ]
+    for batch_index in range(total_batches):
 
-        batch = []
+        start = batch_index * BATCH_SIZE
+        end = min(
+            start + BATCH_SIZE,
+            len(items)
+        )
+
+        chunk = items[start:end]
+
+        statements = []
 
         for url, score in chunk:
+            statements.append({
+                "sql": """
+                    UPDATE documents
+                    SET pagerank = ?
+                    WHERE url = ?
+                """,
+                "params": [
+                    float(score),
+                    url,
+                ],
+            })
 
-            batch.append(
-                {
-                    "sql": UPDATE_SQL,
-                    "params": [
-                        float(score),
-                        url,
-                    ],
-                }
-            )
+        d1_request({
+            "batch": statements
+        })
 
-        try:
+        completed += len(chunk)
 
-            d1_request(batch)
+        print(
+            f"[D1] Update "
+            f"{completed:,}/{len(items):,}"
+            f" ({completed / len(items) * 100:.1f}%)"
+        )
 
-            success_count += len(chunk)
-
-            current_batch = (
-                start // D1_BATCH_SIZE
-            ) + 1
-
-            print(
-                "[D1 PAGERANK] "
-                f"Batch {current_batch}/"
-                f"{total_batches} | "
-                f"{success_count:,}/"
-                f"{total:,}"
-            )
-
-        except Exception as exc:
-
-            print(
-                "[D1 PAGERANK ERROR]"
-            )
-
-            print(exc)
-
-            print(
-                "[D1] Proses update dihentikan "
-                "agar tidak terus menghabiskan "
-                "write quota."
-            )
-
-            return
-
-    print(
-        "[CLOUDFLARE PUSH] "
-        f"PageRank berhasil diupdate: "
-        f"{success_count:,}/{total:,}"
-    )
+    print("[D1] Semua PageRank berhasil di-update.")
 
 
 # ============================================================
-# SHOW TOP RESULTS
+# TOP RESULTS
 # ============================================================
 
-def show_top_scores(scores):
-
+def print_top_scores(scores, limit=20):
     if not scores:
         return
 
     print()
-    print(
-        "=" * 60
-    )
-
-    print(
-        "TOP PAGERANK"
-    )
-
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
+    print("TOP PAGERANK")
+    print("=" * 60)
 
     top = sorted(
         scores.items(),
         key=lambda item: item[1],
         reverse=True,
-    )[:20]
+    )[:limit]
 
-    for index, (url, score) in enumerate(
-        top,
-        start=1,
-    ):
-
+    for index, (url, score) in enumerate(top, start=1):
         print(
-            f"{index:02d}. "
+            f"{index:>2}. "
             f"{score:.10f} "
             f"{url}"
         )
 
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
 
 
 # ============================================================
@@ -490,135 +495,128 @@ def show_top_scores(scores):
 
 def main():
 
-    started = time.monotonic()
+    start_time = time.time()
 
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
+    print("DEEVV SEARCH - PAGERANK")
+    print("=" * 60)
+    print(f"Batch size : {BATCH_SIZE}")
+    print(f"Alpha      : {ALPHA}")
+    print(f"Max iter   : {MAX_ITER}")
+    print(f"Tolerance  : {TOLERANCE}")
+    print("Engine     : PURE PYTHON")
+    print("NumPy      : NO")
+    print("SciPy      : NO")
+    print("=" * 60)
 
-    print(
-        "DEEVV SEARCH - PAGERANK"
-    )
+    try:
+        # ----------------------------------------------------
+        # 1. CONFIG
+        # ----------------------------------------------------
 
-    print(
-        "=" * 60
-    )
+        check_config()
 
-    print(
-        f"Batch size : {D1_BATCH_SIZE}"
-    )
+        # ----------------------------------------------------
+        # 2. GET GRAPH
+        # ----------------------------------------------------
 
-    print(
-        f"Alpha      : {PAGERANK_ALPHA}"
-    )
-
-    print(
-        f"Max iter   : {PAGERANK_MAX_ITER}"
-    )
-
-    print(
-        "=" * 60
-    )
-
-    # --------------------------------------------------------
-    # ENV ONLY
-    # --------------------------------------------------------
-
-    validate_environment()
-
-    # --------------------------------------------------------
-    # LOAD GRAPH
-    # --------------------------------------------------------
-
-    rows = load_page_graph()
-
-    if not rows:
+        edges = get_page_graph()
 
         print(
-            "[PAGERANK] page_graph kosong."
+            f"[D1] Graph edges: {len(edges):,}"
+        )
+
+        if not edges:
+            print(
+                "[PAGERANK] page_graph kosong. "
+                "Tidak ada yang dihitung."
+            )
+            return
+
+        # ----------------------------------------------------
+        # 3. BUILD GRAPH
+        # ----------------------------------------------------
+
+        print("[PAGERANK] Membuat graph...")
+
+        nodes, outgoing, incoming = build_graph(edges)
+
+        print(
+            f"[PAGERANK] Nodes : {len(nodes):,}"
         )
 
         print(
-            "[PAGERANK] Tidak ada perubahan "
-            "ke D1."
+            f"[PAGERANK] Edges : "
+            f"{sum(len(v) for v in outgoing.values()):,}"
         )
 
-        return
+        # ----------------------------------------------------
+        # 4. CALCULATE
+        # ----------------------------------------------------
 
-    # --------------------------------------------------------
-    # BUILD GRAPH
-    # --------------------------------------------------------
+        print("[PAGERANK] Menghitung PageRank...")
 
-    graph = build_graph(rows)
+        scores = calculate_pagerank(
+            nodes,
+            outgoing,
+        )
 
-    if graph.number_of_nodes() == 0:
+        # ----------------------------------------------------
+        # 5. SHOW TOP
+        # ----------------------------------------------------
 
+        print_top_scores(
+            scores,
+            limit=20,
+        )
+
+        # ----------------------------------------------------
+        # 6. UPDATE D1
+        # ----------------------------------------------------
+
+        print()
+        print("[D1] Menyimpan PageRank...")
+
+        update_pagerank(scores)
+
+        # ----------------------------------------------------
+        # DONE
+        # ----------------------------------------------------
+
+        elapsed = time.time() - start_time
+
+        print()
+        print("=" * 60)
+        print("PAGERANK SELESAI")
+        print("=" * 60)
         print(
-            "[PAGERANK] Tidak ada node."
+            f"Nodes  : {len(nodes):,}"
         )
+        print(
+            f"Edges  : "
+            f"{sum(len(v) for v in outgoing.values()):,}"
+        )
+        print(
+            f"Scores : {len(scores):,}"
+        )
+        print(
+            f"Waktu  : {elapsed:.2f} detik"
+        )
+        print("=" * 60)
 
-        return
+    except KeyboardInterrupt:
+        print()
+        print("[ERROR] Proses dihentikan.")
+        sys.exit(1)
 
-    # --------------------------------------------------------
-    # CALCULATE
-    # --------------------------------------------------------
-
-    scores = calculate_pagerank(
-        graph
-    )
-
-    # --------------------------------------------------------
-    # SHOW TOP
-    # --------------------------------------------------------
-
-    show_top_scores(
-        scores
-    )
-
-    # --------------------------------------------------------
-    # WRITE BACK TO D1
-    # --------------------------------------------------------
-
-    update_pagerank_to_d1(
-        scores
-    )
-
-    elapsed = (
-        time.monotonic() - started
-    )
-
-    print()
-    print(
-        "=" * 60
-    )
-
-    print(
-        "PAGERANK SELESAI"
-    )
-
-    print(
-        f"Nodes       : "
-        f"{graph.number_of_nodes():,}"
-    )
-
-    print(
-        f"Edges       : "
-        f"{graph.number_of_edges():,}"
-    )
-
-    print(
-        f"Scores      : "
-        f"{len(scores):,}"
-    )
-
-    print(
-        f"Time        : "
-        f"{elapsed:.2f}s"
-    )
-
-    print(
-        "=" * 60
-    )
+    except Exception as exc:
+        print()
+        print("=" * 60)
+        print("PAGERANK ERROR")
+        print("=" * 60)
+        print(str(exc))
+        print("=" * 60)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
