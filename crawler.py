@@ -16,7 +16,16 @@ from bs4 import BeautifulSoup
 # CONFIGURATION
 # ============================================================
 
+# HARD LIMIT SELURUH PROGRAM
 MAX_RUN_SECONDS = 3600
+
+# Sisakan waktu untuk upload D1 setelah crawling berhenti.
+# 55 menit crawling + maksimal 5 menit upload.
+CRAWL_RESERVE_SECONDS = 300
+
+CRAWL_MAX_SECONDS = (
+    MAX_RUN_SECONDS - CRAWL_RESERVE_SECONDS
+)
 
 CONCURRENCY = 15
 
@@ -24,8 +33,7 @@ MAX_URL_LENGTH = 200
 MAX_PATH_DEPTH = 6
 MAX_PAGES_PER_DOMAIN = 40
 
-# Jumlah SQL statement dalam SATU request D1.
-# Ini bukan batas jumlah data yang bisa disimpan.
+# Jumlah statement dalam satu request REST D1.
 D1_BATCH_SIZE = 50
 
 D1_REQUEST_TIMEOUT = 30
@@ -79,14 +87,40 @@ stats = {
 # TIME CONTROL
 # ============================================================
 
-def time_exceeded():
-    return (
-        time.monotonic() - START_TIME
-    ) >= MAX_RUN_SECONDS
-
-
 def elapsed_seconds():
-    return int(time.monotonic() - START_TIME)
+    return int(
+        time.monotonic() - START_TIME
+    )
+
+
+def remaining_seconds():
+    return max(
+        0,
+        MAX_RUN_SECONDS
+        - (
+            time.monotonic()
+            - START_TIME
+        ),
+    )
+
+
+def crawl_remaining_seconds():
+    return max(
+        0,
+        CRAWL_MAX_SECONDS
+        - (
+            time.monotonic()
+            - START_TIME
+        ),
+    )
+
+
+def time_exceeded():
+    return remaining_seconds() <= 0
+
+
+def crawl_time_exceeded():
+    return crawl_remaining_seconds() <= 0
 
 
 # ============================================================
@@ -105,7 +139,7 @@ def d1_request(batch):
     """
     Kirim batch SQL ke Cloudflare D1.
 
-    Format API yang benar:
+    Format REST API D1:
 
     {
         "batch": [
@@ -116,22 +150,41 @@ def d1_request(batch):
         ]
     }
 
-    Tidak ada request test tambahan.
+    Tidak melakukan request test tambahan.
     """
 
     if not CF_ACCOUNT_ID:
-        raise RuntimeError("CF_ACCOUNT_ID tidak tersedia")
+        raise RuntimeError(
+            "CF_ACCOUNT_ID tidak tersedia"
+        )
 
     if not CF_D1_DATABASE_ID:
-        raise RuntimeError("CF_D1_DATABASE_ID tidak tersedia")
+        raise RuntimeError(
+            "CF_D1_DATABASE_ID tidak tersedia"
+        )
 
     if not CF_API_TOKEN:
-        raise RuntimeError("CF_API_TOKEN tidak tersedia")
+        raise RuntimeError(
+            "CF_API_TOKEN tidak tersedia"
+        )
+
+    if not batch:
+        return None
+
+    # Jangan mulai request kalau deadline sudah habis.
+    remaining = remaining_seconds()
+
+    if remaining <= 0:
+        raise TimeoutError(
+            "Global deadline D1 tercapai."
+        )
 
     url = get_d1_api_url()
 
     headers = {
-        "Authorization": f"Bearer {CF_API_TOKEN}",
+        "Authorization": (
+            f"Bearer {CF_API_TOKEN}"
+        ),
         "Content-Type": "application/json",
     }
 
@@ -141,7 +194,25 @@ def d1_request(batch):
 
     last_error = None
 
-    for attempt in range(1, D1_RETRY_COUNT + 1):
+    for attempt in range(
+        1,
+        D1_RETRY_COUNT + 1,
+    ):
+
+        remaining = remaining_seconds()
+
+        if remaining <= 0:
+            raise TimeoutError(
+                "Global deadline tercapai "
+                "sebelum request D1."
+            )
+
+        # Jangan membuat timeout request lebih lama
+        # daripada waktu global yang tersisa.
+        request_timeout = min(
+            D1_REQUEST_TIMEOUT,
+            max(1, int(remaining)),
+        )
 
         try:
 
@@ -149,17 +220,21 @@ def d1_request(batch):
                 url,
                 headers=headers,
                 json=payload,
-                timeout=D1_REQUEST_TIMEOUT,
+                timeout=request_timeout,
             )
 
             try:
                 data = response.json()
+
             except Exception:
+
                 data = {
                     "success": False,
                     "errors": [
                         {
-                            "message": response.text[:1000]
+                            "message": (
+                                response.text[:1000]
+                            )
                         }
                     ],
                 }
@@ -172,50 +247,114 @@ def d1_request(batch):
                 )
 
                 print(
-                    f"[D1 ERROR] Attempt "
-                    f"{attempt}/{D1_RETRY_COUNT}: "
+                    f"[D1 ERROR] "
+                    f"Attempt "
+                    f"{attempt}/"
+                    f"{D1_RETRY_COUNT}: "
                     f"{last_error}"
                 )
 
                 if attempt < D1_RETRY_COUNT:
-                    time.sleep(min(2 * attempt, 5))
+
+                    sleep_time = min(
+                        2 * attempt,
+                        5,
+                        max(
+                            0,
+                            remaining_seconds(),
+                        ),
+                    )
+
+                    if sleep_time > 0:
+                        time.sleep(
+                            sleep_time
+                        )
 
                 continue
 
-            if not data.get("success", False):
+            if not data.get(
+                "success",
+                False,
+            ):
 
-                last_error = str(data.get("errors"))
+                last_error = str(
+                    data.get("errors")
+                )
 
                 print(
-                    f"[D1 ERROR] Attempt "
-                    f"{attempt}/{D1_RETRY_COUNT}: "
+                    f"[D1 ERROR] "
+                    f"Attempt "
+                    f"{attempt}/"
+                    f"{D1_RETRY_COUNT}: "
                     f"{last_error}"
                 )
 
-                # Error SQL/schema tidak perlu diulang berkali-kali.
-                if attempt >= D1_RETRY_COUNT:
-                    break
+                if attempt < D1_RETRY_COUNT:
 
-                time.sleep(min(2 * attempt, 5))
+                    sleep_time = min(
+                        2 * attempt,
+                        5,
+                        max(
+                            0,
+                            remaining_seconds(),
+                        ),
+                    )
+
+                    if sleep_time > 0:
+                        time.sleep(
+                            sleep_time
+                        )
+
                 continue
 
             return data
+
+        except requests.Timeout as exc:
+
+            last_error = (
+                f"Request timeout: {exc}"
+            )
+
+            print(
+                f"[D1 TIMEOUT] "
+                f"Attempt "
+                f"{attempt}/"
+                f"{D1_RETRY_COUNT}"
+            )
+
+            if attempt < D1_RETRY_COUNT:
+                continue
 
         except requests.RequestException as exc:
 
             last_error = str(exc)
 
             print(
-                f"[D1 NETWORK ERROR] Attempt "
-                f"{attempt}/{D1_RETRY_COUNT}: "
+                f"[D1 NETWORK ERROR] "
+                f"Attempt "
+                f"{attempt}/"
+                f"{D1_RETRY_COUNT}: "
                 f"{exc}"
             )
 
             if attempt < D1_RETRY_COUNT:
-                time.sleep(min(2 * attempt, 5))
+
+                sleep_time = min(
+                    2 * attempt,
+                    5,
+                    max(
+                        0,
+                        remaining_seconds(),
+                    ),
+                )
+
+                if sleep_time > 0:
+                    time.sleep(
+                        sleep_time
+                    )
 
     raise RuntimeError(
-        f"D1 request gagal setelah "
+        "D1 request gagal setelah "
         f"{D1_RETRY_COUNT} percobaan: "
         f"{last_error}"
     )
@@ -226,14 +365,11 @@ def d1_request(batch):
 # ============================================================
 
 def get_already_visited_urls_d1():
-    """
-    Hanya SATU query read untuk mengambil URL yang sudah ada.
 
-    Ini sengaja dilakukan sekali di awal supaya crawler tidak
-    melakukan SELECT ke D1 untuk setiap URL.
-    """
-
-    print("[D1] Mengambil daftar URL yang sudah tersimpan...")
+    print(
+        "[D1] Mengambil daftar URL "
+        "yang sudah tersimpan..."
+    )
 
     batch = [
         {
@@ -251,24 +387,30 @@ def get_already_visited_urls_d1():
 
         urls = set()
 
-        results = data.get("result", [])
-
-        if not results:
-            return urls
+        results = data.get(
+            "result",
+            [],
+        )
 
         for result in results:
 
-            rows = result.get("results", [])
+            rows = result.get(
+                "results",
+                [],
+            )
 
             for row in rows:
 
-                url = row.get("url")
+                url = row.get(
+                    "url"
+                )
 
                 if url:
                     urls.add(url)
 
         print(
-            f"[D1] {len(urls):,} URL sudah ada."
+            f"[D1] {len(urls):,} URL "
+            "sudah ada."
         )
 
         return urls
@@ -280,8 +422,9 @@ def get_already_visited_urls_d1():
         )
 
         print(
-            "[D1] Crawler dihentikan agar tidak "
-            "mengulang crawl dan berpotensi menulis data duplikat."
+            "[D1] Crawler dihentikan "
+            "agar tidak mengulang crawl "
+            "secara tidak aman."
         )
 
         raise
@@ -292,11 +435,15 @@ def get_already_visited_urls_d1():
 # ============================================================
 
 def normalize_url(url):
+
     try:
 
         parsed = urlparse(url)
 
-        if parsed.scheme not in ("http", "https"):
+        if parsed.scheme not in (
+            "http",
+            "https",
+        ):
             return None
 
         if not parsed.netloc:
@@ -309,17 +456,17 @@ def normalize_url(url):
 
         hostname = hostname.lower()
 
-        # Buang www hanya untuk normalisasi hostname.
-        # URL tetap menggunakan hostname hasil normalisasi.
         if hostname.startswith("www."):
             hostname = hostname[4:]
 
         path = parsed.path or "/"
 
-        # Hilangkan // berlebihan
-        path = re.sub(r"/+", "/", path)
+        path = re.sub(
+            r"/+",
+            "/",
+            path,
+        )
 
-        # Jangan simpan fragment/query agar URL canonical lebih stabil.
         normalized = (
             f"{parsed.scheme.lower()}://"
             f"{hostname}"
@@ -329,15 +476,22 @@ def normalize_url(url):
         if len(normalized) > MAX_URL_LENGTH:
             return None
 
-        return normalized.rstrip("/") if path != "/" else normalized
+        if path != "/":
+            return normalized.rstrip("/")
+
+        return normalized
 
     except Exception:
         return None
 
 
 def get_domain(url):
+
     try:
-        hostname = urlparse(url).hostname
+
+        hostname = urlparse(
+            url
+        ).hostname
 
         if not hostname:
             return ""
@@ -354,12 +508,16 @@ def get_domain(url):
 
 
 def get_path_depth(url):
+
     try:
 
-        path = urlparse(url).path
+        path = urlparse(
+            url
+        ).path
 
         parts = [
-            x for x in path.split("/")
+            x
+            for x in path.split("/")
             if x
         ]
 
@@ -370,6 +528,7 @@ def get_path_depth(url):
 
 
 def is_valid_url(url):
+
     if not url:
         return False
 
@@ -378,13 +537,15 @@ def is_valid_url(url):
 
     parsed = urlparse(url)
 
-    if parsed.scheme not in ("http", "https"):
+    if parsed.scheme not in (
+        "http",
+        "https",
+    ):
         return False
 
     if not parsed.hostname:
         return False
 
-    # Hindari URL dengan username/password.
     if parsed.username or parsed.password:
         return False
 
@@ -434,31 +595,41 @@ def is_spam_domain(url):
 
     hostname = get_domain(url)
 
-    for tld in SPAM_TLDS:
-
-        if hostname.endswith(tld):
-            return True
-
-    return False
+    return any(
+        hostname.endswith(tld)
+        for tld in SPAM_TLDS
+    )
 
 
 def is_spider_trap(url):
 
     lowered = url.lower()
 
-    for pattern in TRAP_PATTERNS:
-
-        if re.search(pattern, lowered):
-            return True
-
-    return False
+    return any(
+        re.search(
+            pattern,
+            lowered,
+        )
+        for pattern in TRAP_PATTERNS
+    )
 
 
 # ============================================================
 # ROBOTS
 # ============================================================
 
-def can_fetch_robots(url):
+async def can_fetch_robots(
+    session,
+    url,
+):
+    """
+    Async robots checker.
+
+    Versi lama memakai RobotFileParser.read(),
+    yang synchronous dan bisa menggantung.
+
+    Sekarang robots.txt punya timeout nyata.
+    """
 
     domain = get_domain(url)
 
@@ -468,6 +639,9 @@ def can_fetch_robots(url):
     if domain in robots_cache:
         return robots_cache[domain]
 
+    if crawl_time_exceeded():
+        return False
+
     parsed = urlparse(url)
 
     robots_url = (
@@ -475,28 +649,55 @@ def can_fetch_robots(url):
         f"{parsed.netloc}/robots.txt"
     )
 
-    parser = RobotFileParser()
-
-    parser.set_url(robots_url)
-
     try:
 
-        parser.read()
-
-        allowed = parser.can_fetch(
-            USER_AGENT,
-            url,
+        timeout = aiohttp.ClientTimeout(
+            total=ROBOTS_TIMEOUT
         )
+
+        async with session.get(
+            robots_url,
+            timeout=timeout,
+            allow_redirects=True,
+            headers={
+                "User-Agent": USER_AGENT,
+            },
+        ) as response:
+
+            if response.status >= 400:
+
+                # Kalau robots tidak tersedia,
+                # izinkan crawler melanjutkan.
+                robots_cache[domain] = True
+
+                return True
+
+            content = await response.text(
+                errors="ignore"
+            )
+
+            parser = RobotFileParser()
+
+            parser.parse(
+                content.splitlines()
+            )
+
+            allowed = parser.can_fetch(
+                USER_AGENT,
+                url,
+            )
+
+            robots_cache[domain] = allowed
+
+            return allowed
 
     except Exception:
 
-        # Jika robots tidak dapat dibaca,
-        # jangan langsung memblokir seluruh domain.
-        allowed = True
+        # Timeout/error robots tidak boleh
+        # membuat crawler menggantung.
+        robots_cache[domain] = True
 
-    robots_cache[domain] = allowed
-
-    return allowed
+        return True
 
 
 # ============================================================
@@ -522,7 +723,10 @@ def extract_title(soup):
     if soup.title:
 
         title = clean_text(
-            soup.title.get_text(" ", strip=True)
+            soup.title.get_text(
+                " ",
+                strip=True,
+            )
         )
 
         if title:
@@ -535,10 +739,14 @@ def extract_title(soup):
 
     if og_title:
 
-        value = og_title.get("content")
+        value = og_title.get(
+            "content"
+        )
 
         if value:
-            return clean_text(value)[:500]
+            return clean_text(
+                value
+            )[:500]
 
     return ""
 
@@ -557,10 +765,14 @@ def extract_description(soup):
 
     if meta:
 
-        content = meta.get("content")
+        content = meta.get(
+            "content"
+        )
 
         if content:
-            return clean_text(content)[:1000]
+            return clean_text(
+                content
+            )[:1000]
 
     og_description = soup.find(
         "meta",
@@ -569,17 +781,23 @@ def extract_description(soup):
 
     if og_description:
 
-        content = og_description.get("content")
+        content = og_description.get(
+            "content"
+        )
 
         if content:
-            return clean_text(content)[:1000]
+            return clean_text(
+                content
+            )[:1000]
 
     return ""
 
 
 def extract_snippet(soup):
 
-    description = extract_description(soup)
+    description = extract_description(
+        soup
+    )
 
     if description:
         return description[:1000]
@@ -607,17 +825,24 @@ def extract_snippet(soup):
     return text[:1000]
 
 
-def extract_favicon(soup, page_url):
+def extract_favicon(
+    soup,
+    page_url,
+):
 
     icon = soup.find(
         "link",
         rel=lambda value: (
-            value and
-            any(
-                "icon" in str(x).lower()
+            value
+            and any(
+                "icon"
+                in str(x).lower()
                 for x in (
                     value
-                    if isinstance(value, list)
+                    if isinstance(
+                        value,
+                        list,
+                    )
                     else [value]
                 )
             )
@@ -626,7 +851,9 @@ def extract_favicon(soup, page_url):
 
     if icon:
 
-        href = icon.get("href")
+        href = icon.get(
+            "href"
+        )
 
         if href:
 
@@ -635,7 +862,9 @@ def extract_favicon(soup, page_url):
                 href,
             )[:1000]
 
-    parsed = urlparse(page_url)
+    parsed = urlparse(
+        page_url
+    )
 
     return (
         f"{parsed.scheme}://"
@@ -643,7 +872,10 @@ def extract_favicon(soup, page_url):
     )
 
 
-def extract_thumbnail(soup, page_url):
+def extract_thumbnail(
+    soup,
+    page_url,
+):
 
     og_image = soup.find(
         "meta",
@@ -652,7 +884,9 @@ def extract_thumbnail(soup, page_url):
 
     if og_image:
 
-        content = og_image.get("content")
+        content = og_image.get(
+            "content"
+        )
 
         if content:
 
@@ -670,7 +904,9 @@ def extract_thumbnail(soup, page_url):
 
     if twitter_image:
 
-        content = twitter_image.get("content")
+        content = twitter_image.get(
+            "content"
+        )
 
         if content:
 
@@ -684,20 +920,29 @@ def extract_thumbnail(soup, page_url):
 
 def extract_language(soup):
 
-    html = soup.find("html")
+    html = soup.find(
+        "html"
+    )
 
     if not html:
         return ""
 
-    language = html.get("lang")
+    language = html.get(
+        "lang"
+    )
 
     if language:
-        return clean_text(language)[:20]
+        return clean_text(
+            language
+        )[:20]
 
     return ""
 
 
-def extract_last_modified(soup, headers):
+def extract_last_modified(
+    soup,
+    headers,
+):
 
     header_value = headers.get(
         "Last-Modified"
@@ -732,7 +977,9 @@ def extract_last_modified(soup, headers):
 
         if tag:
 
-            content = tag.get("content")
+            content = tag.get(
+                "content"
+            )
 
             if content:
                 return content[:100]
@@ -744,28 +991,36 @@ def extract_last_modified(soup, headers):
 # LINK EXTRACTION
 # ============================================================
 
-def extract_links(soup, base_url):
+def extract_links(
+    soup,
+    base_url,
+):
 
     links = set()
 
-    base_domain = get_domain(base_url)
+    for anchor in soup.find_all(
+        "a",
+        href=True,
+    ):
 
-    for anchor in soup.find_all("a", href=True):
-
-        href = anchor.get("href")
+        href = anchor.get(
+            "href"
+        )
 
         if not href:
             continue
 
         href = href.strip()
 
-        if href.startswith((
-            "#",
-            "javascript:",
-            "mailto:",
-            "tel:",
-            "data:",
-        )):
+        if href.startswith(
+            (
+                "#",
+                "javascript:",
+                "mailto:",
+                "tel:",
+                "data:",
+            )
+        ):
             continue
 
         absolute = urljoin(
@@ -780,19 +1035,24 @@ def extract_links(soup, base_url):
         if not normalized:
             continue
 
-        if not is_valid_url(normalized):
+        if not is_valid_url(
+            normalized
+        ):
             continue
 
-        if is_spam_domain(normalized):
+        if is_spam_domain(
+            normalized
+        ):
             continue
 
-        if is_spider_trap(normalized):
+        if is_spider_trap(
+            normalized
+        ):
             continue
 
-        # Graph tetap boleh lintas domain.
-        # Batas crawl domain diterapkan ketika URL benar-benar
-        # dimasukkan ke queue.
-        links.add(normalized)
+        links.add(
+            normalized
+        )
 
     return links
 
@@ -828,6 +1088,9 @@ async def fetch_page(
     url,
 ):
 
+    if crawl_time_exceeded():
+        return None
+
     timeout = aiohttp.ClientTimeout(
         total=HTTP_TIMEOUT
     )
@@ -860,8 +1123,10 @@ async def fetch_page(
             )
 
             if (
-                "text/html" not in content_type
-                and "application/xhtml+xml"
+                "text/html"
+                not in content_type
+                and
+                "application/xhtml+xml"
                 not in content_type
             ):
                 return None
@@ -905,15 +1170,13 @@ class ProfessionalSearchCrawler:
             existing_urls
         )
 
-        self.queue = asyncio.PriorityQueue()
+        self.queue = (
+            asyncio.PriorityQueue()
+        )
 
         self.session = None
 
         self.counter = 0
-
-        self.local_seen = set(
-            existing_urls
-        )
 
     async def add_url(
         self,
@@ -921,15 +1184,19 @@ class ProfessionalSearchCrawler:
         priority=10,
     ):
 
-        if time_exceeded():
+        if crawl_time_exceeded():
             return
 
-        normalized = normalize_url(url)
+        normalized = normalize_url(
+            url
+        )
 
         if not normalized:
             return
 
-        if normalized in self.local_seen:
+        if normalized in (
+            self.existing_urls
+        ):
             return
 
         if normalized in visited_urls:
@@ -938,16 +1205,24 @@ class ProfessionalSearchCrawler:
         if normalized in queued_urls:
             return
 
-        if not is_valid_url(normalized):
+        if not is_valid_url(
+            normalized
+        ):
             return
 
-        if is_spam_domain(normalized):
+        if is_spam_domain(
+            normalized
+        ):
             return
 
-        if is_spider_trap(normalized):
+        if is_spider_trap(
+            normalized
+        ):
             return
 
-        domain = get_domain(normalized)
+        domain = get_domain(
+            normalized
+        )
 
         count = domain_page_count.get(
             domain,
@@ -957,10 +1232,22 @@ class ProfessionalSearchCrawler:
         if count >= MAX_PAGES_PER_DOMAIN:
             return
 
-        if not can_fetch_robots(normalized):
+        # IMPORTANT:
+        # robots sekarang async + timeout.
+        allowed = await can_fetch_robots(
+            self.session,
+            normalized,
+        )
+
+        if not allowed:
             return
 
-        queued_urls.add(normalized)
+        if crawl_time_exceeded():
+            return
+
+        queued_urls.add(
+            normalized
+        )
 
         self.counter += 1
 
@@ -974,42 +1261,65 @@ class ProfessionalSearchCrawler:
 
     async def worker(self):
 
-        while not time_exceeded():
+        while not crawl_time_exceeded():
 
             try:
 
-                priority, _, url = (
-                    await asyncio.wait_for(
-                        self.queue.get(),
-                        timeout=2,
-                    )
+                remaining = (
+                    crawl_remaining_seconds()
+                )
+
+                if remaining <= 0:
+                    return
+
+                wait_timeout = min(
+                    2,
+                    max(
+                        0.1,
+                        remaining,
+                    ),
+                )
+
+                (
+                    priority,
+                    _,
+                    url,
+                ) = await asyncio.wait_for(
+                    self.queue.get(),
+                    timeout=wait_timeout,
                 )
 
             except asyncio.TimeoutError:
 
-                if self.queue.empty():
-                    return
-
-                continue
+                return
 
             try:
 
-                queued_urls.discard(url)
+                queued_urls.discard(
+                    url
+                )
 
                 if url in visited_urls:
                     continue
 
-                domain = get_domain(url)
+                domain = get_domain(
+                    url
+                )
 
                 count = domain_page_count.get(
                     domain,
                     0,
                 )
 
-                if count >= MAX_PAGES_PER_DOMAIN:
+                if (
+                    count
+                    >= MAX_PAGES_PER_DOMAIN
+                ):
                     continue
 
-                visited_urls.add(url)
+                visited_urls.add(
+                    url
+                )
 
                 page = await fetch_page(
                     self.session,
@@ -1017,7 +1327,9 @@ class ProfessionalSearchCrawler:
                 )
 
                 if not page:
+
                     stats["errors"] += 1
+
                     continue
 
                 final_url = page["url"]
@@ -1026,7 +1338,6 @@ class ProfessionalSearchCrawler:
 
                 headers = page["headers"]
 
-                # Redirected URL may differ.
                 visited_urls.add(
                     final_url
                 )
@@ -1135,45 +1446,56 @@ class ProfessionalSearchCrawler:
                 # QUEUE NEW URLS
                 # ==================================================
 
-                for target_url in links:
+                if not crawl_time_exceeded():
 
-                    if time_exceeded():
-                        break
+                    for target_url in links:
 
-                    # URL dari domain yang sudah penuh
-                    # tidak perlu dimasukkan.
-                    target_domain = get_domain(
-                        target_url
-                    )
+                        if crawl_time_exceeded():
+                            break
 
-                    target_count = (
-                        domain_page_count.get(
-                            target_domain,
-                            0,
+                        target_domain = (
+                            get_domain(
+                                target_url
+                            )
                         )
-                    )
 
-                    if (
-                        target_count
-                        >= MAX_PAGES_PER_DOMAIN
-                    ):
-                        continue
+                        target_count = (
+                            domain_page_count.get(
+                                target_domain,
+                                0,
+                            )
+                        )
 
-                    await self.add_url(
-                        target_url,
-                        priority=20,
-                    )
+                        if (
+                            target_count
+                            >= MAX_PAGES_PER_DOMAIN
+                        ):
+                            continue
+
+                        await self.add_url(
+                            target_url,
+                            priority=20,
+                        )
 
                 stats["saved"] += 1
 
-                if stats["crawled"] % 100 == 0:
+                if (
+                    stats["crawled"] % 100
+                    == 0
+                ):
 
                     print(
                         "[CRAWLER] "
-                        f"crawled={stats['crawled']:,} "
-                        f"queued={self.queue.qsize():,} "
-                        f"graph={stats['graph']:,} "
-                        f"time={elapsed_seconds()}s"
+                        f"crawled="
+                        f"{stats['crawled']:,} "
+                        f"queued="
+                        f"{self.queue.qsize():,} "
+                        f"graph="
+                        f"{stats['graph']:,} "
+                        f"time="
+                        f"{elapsed_seconds()}s "
+                        f"remaining="
+                        f"{int(crawl_remaining_seconds())}s"
                     )
 
             except Exception as exc:
@@ -1200,17 +1522,25 @@ class ProfessionalSearchCrawler:
             ttl_dns_cache=300,
         )
 
-        self.session = aiohttp.ClientSession(
-            connector=connector
+        self.session = (
+            aiohttp.ClientSession(
+                connector=connector
+            )
         )
+
+        workers = []
 
         try:
 
             print(
-                "[CRAWLER] Menambahkan seed..."
+                "[CRAWLER] "
+                "Menambahkan seed..."
             )
 
             for seed in seeds:
+
+                if crawl_time_exceeded():
+                    break
 
                 await self.add_url(
                     seed,
@@ -1221,23 +1551,78 @@ class ProfessionalSearchCrawler:
                 asyncio.create_task(
                     self.worker()
                 )
-                for _ in range(CONCURRENCY)
+                for _ in range(
+                    CONCURRENCY
+                )
             ]
 
-            await self.queue.join()
+            # ====================================================
+            # HARD TIMEOUT QUEUE
+            # ====================================================
 
-            for worker in workers:
-
-                worker.cancel()
-
-            await asyncio.gather(
-                *workers,
-                return_exceptions=True,
+            remaining = (
+                crawl_remaining_seconds()
             )
+
+            if remaining > 0:
+
+                try:
+
+                    await asyncio.wait_for(
+                        self.queue.join(),
+                        timeout=remaining,
+                    )
+
+                    print(
+                        "[CRAWLER] "
+                        "Queue selesai secara normal."
+                    )
+
+                except asyncio.TimeoutError:
+
+                    print()
+                    print(
+                        "[CRAWLER] "
+                        "BATAS WAKTU CRAWL "
+                        "TERCAPAI."
+                    )
+
+                    print(
+                        "[CRAWLER] "
+                        f"Berhenti setelah "
+                        f"{elapsed_seconds()} detik."
+                    )
+
+            else:
+
+                print(
+                    "[CRAWLER] "
+                    "Waktu crawl sudah habis."
+                )
 
         finally:
 
+            # ====================================================
+            # SELALU CANCEL WORKER
+            # ====================================================
+
+            for worker in workers:
+
+                if not worker.done():
+                    worker.cancel()
+
+            if workers:
+
+                await asyncio.gather(
+                    *workers,
+                    return_exceptions=True,
+                )
+
+            # Pastikan session selalu ditutup.
             await self.session.close()
+
+            # Bersihkan queue references.
+            queued_urls.clear()
 
 
 # ============================================================
@@ -1269,6 +1654,10 @@ ON CONFLICT(url) DO UPDATE SET
 """
 
 
+# ============================================================
+# D1 GRAPH SQL
+# ============================================================
+
 GRAPH_SQL = """
 INSERT INTO page_graph (
     source_url,
@@ -1281,24 +1670,44 @@ DO NOTHING
 
 
 # ============================================================
-# D1 UPLOAD
+# D1 UPLOAD DOCUMENTS
 # ============================================================
 
 def upload_documents_to_d1():
+
     if not documents:
+
         print(
             "[D1] Tidak ada document baru."
         )
+
         return
 
-    total = len(documents)
+    if time_exceeded():
+
+        print(
+            "[D1] Deadline global tercapai."
+        )
+
+        return
+
+    total = len(
+        documents
+    )
 
     print(
         f"[CLOUDFLARE PUSH] "
-        f"Memulai upload {total:,} dokumen ke D1..."
+        f"Memulai upload "
+        f"{total:,} dokumen ke D1..."
     )
 
     success_count = 0
+
+    total_batches = (
+        total
+        + D1_BATCH_SIZE
+        - 1
+    ) // D1_BATCH_SIZE
 
     for start in range(
         0,
@@ -1309,14 +1718,15 @@ def upload_documents_to_d1():
         if time_exceeded():
 
             print(
-                "[D1] Batas waktu tercapai "
-                "saat upload documents."
+                "[D1] Deadline global "
+                "tercapai saat upload documents."
             )
 
             break
 
         chunk = documents[
-            start:start + D1_BATCH_SIZE
+            start:
+            start + D1_BATCH_SIZE
         ]
 
         batch = []
@@ -1342,59 +1752,95 @@ def upload_documents_to_d1():
 
         try:
 
-            d1_request(batch)
+            d1_request(
+                batch
+            )
 
-            success_count += len(chunk)
+            success_count += len(
+                chunk
+            )
+
+            current_batch = (
+                start
+                // D1_BATCH_SIZE
+            ) + 1
 
             print(
                 "[D1 DOCUMENTS] "
-                f"{success_count:,}/{total:,}"
+                f"Batch "
+                f"{current_batch}/"
+                f"{total_batches} | "
+                f"{success_count:,}/"
+                f"{total:,}"
             )
 
         except Exception as exc:
 
             print(
-                f"[D1 DOCUMENT ERROR] "
+                "[D1 DOCUMENT ERROR]"
+            )
+
+            print(
                 f"Batch "
-                f"{start // D1_BATCH_SIZE + 1}"
-                f"/"
-                f"{(total + D1_BATCH_SIZE - 1) // D1_BATCH_SIZE}"
-                f" gagal:"
+                f"{start // D1_BATCH_SIZE + 1}/"
+                f"{total_batches} gagal:"
             )
 
             print(exc)
 
-            # Jangan terus menghabiskan quota
-            # dengan retry batch yang sama berkali-kali.
             print(
-                "[D1] Upload documents dihentikan "
-                "setelah batch gagal."
+                "[D1] "
+                "Upload documents dihentikan."
             )
 
             return
 
     print(
-        f"[CLOUDFLARE PUSH] "
+        "[CLOUDFLARE PUSH] "
         f"Documents berhasil diproses: "
         f"{success_count:,}/{total:,}"
     )
 
 
+# ============================================================
+# D1 UPLOAD GRAPH
+# ============================================================
+
 def upload_graph_to_d1():
+
     if not graph_edges:
+
         print(
             "[D1] Tidak ada graph edge baru."
         )
+
         return
 
-    total = len(graph_edges)
+    if time_exceeded():
+
+        print(
+            "[D1] Deadline global tercapai."
+        )
+
+        return
+
+    total = len(
+        graph_edges
+    )
 
     print(
         f"[CLOUDFLARE PUSH] "
-        f"Memulai upload {total:,} graph edges..."
+        f"Memulai upload "
+        f"{total:,} graph edges..."
     )
 
     success_count = 0
+
+    total_batches = (
+        total
+        + D1_BATCH_SIZE
+        - 1
+    ) // D1_BATCH_SIZE
 
     for start in range(
         0,
@@ -1405,14 +1851,15 @@ def upload_graph_to_d1():
         if time_exceeded():
 
             print(
-                "[D1] Batas waktu tercapai "
-                "saat upload graph."
+                "[D1] Deadline global "
+                "tercapai saat upload graph."
             )
 
             break
 
         chunk = graph_edges[
-            start:start + D1_BATCH_SIZE
+            start:
+            start + D1_BATCH_SIZE
         ]
 
         batch = []
@@ -1431,37 +1878,51 @@ def upload_graph_to_d1():
 
         try:
 
-            d1_request(batch)
+            d1_request(
+                batch
+            )
 
-            success_count += len(chunk)
+            success_count += len(
+                chunk
+            )
+
+            current_batch = (
+                start
+                // D1_BATCH_SIZE
+            ) + 1
 
             print(
                 "[D1 GRAPH] "
-                f"{success_count:,}/{total:,}"
+                f"Batch "
+                f"{current_batch}/"
+                f"{total_batches} | "
+                f"{success_count:,}/"
+                f"{total:,}"
             )
 
         except Exception as exc:
 
             print(
-                f"[D1 GRAPH ERROR] "
+                "[D1 GRAPH ERROR]"
+            )
+
+            print(
                 f"Batch "
-                f"{start // D1_BATCH_SIZE + 1}"
-                f"/"
-                f"{(total + D1_BATCH_SIZE - 1) // D1_BATCH_SIZE}"
-                f" gagal:"
+                f"{start // D1_BATCH_SIZE + 1}/"
+                f"{total_batches} gagal:"
             )
 
             print(exc)
 
             print(
-                "[D1] Upload graph dihentikan "
-                "setelah batch gagal."
+                "[D1] "
+                "Upload graph dihentikan."
             )
 
             return
 
     print(
-        f"[CLOUDFLARE PUSH] "
+        "[CLOUDFLARE PUSH] "
         f"Graph berhasil diproses: "
         f"{success_count:,}/{total:,}"
     )
@@ -1472,6 +1933,7 @@ def upload_graph_to_d1():
 # ============================================================
 
 SEEDS = [
+
     "https://www.google.com",
     "https://www.google.co.id",
     "https://duckduckgo.com",
@@ -1537,23 +1999,35 @@ def main():
     print("=" * 60)
 
     print(
-        f"MAX RUN      : {MAX_RUN_SECONDS}s"
+        f"MAX TOTAL RUN : "
+        f"{MAX_RUN_SECONDS}s"
     )
 
     print(
-        f"CONCURRENCY  : {CONCURRENCY}"
+        f"MAX CRAWL     : "
+        f"{CRAWL_MAX_SECONDS}s"
     )
 
     print(
-        f"D1 BATCH     : {D1_BATCH_SIZE}"
+        f"UPLOAD RESERVE: "
+        f"{CRAWL_RESERVE_SECONDS}s"
+    )
+
+    print(
+        f"CONCURRENCY   : "
+        f"{CONCURRENCY}"
+    )
+
+    print(
+        f"D1 BATCH      : "
+        f"{D1_BATCH_SIZE}"
     )
 
     print("=" * 60)
 
-    # --------------------------------------------------------
-    # Validasi environment SAJA.
-    # Tidak melakukan request ke Cloudflare.
-    # --------------------------------------------------------
+    # ========================================================
+    # VALIDATE ENV
+    # ========================================================
 
     required = [
         "CF_ACCOUNT_ID",
@@ -1575,49 +2049,65 @@ def main():
         )
 
         for key in missing:
-            print(f" - {key}")
+            print(
+                f" - {key}"
+            )
 
         sys.exit(1)
 
-    # --------------------------------------------------------
-    # SATU-SATUNYA READ D1
-    # --------------------------------------------------------
+    # ========================================================
+    # GET EXISTING URLS
+    # ========================================================
 
     existing_urls = (
         get_already_visited_urls_d1()
     )
 
-    # --------------------------------------------------------
-    # CRAWL
-    # --------------------------------------------------------
+    if time_exceeded():
 
-    crawler = ProfessionalSearchCrawler(
-        existing_urls
+        print(
+            "[FATAL] Deadline tercapai "
+            "setelah membaca D1."
+        )
+
+        return
+
+    # ========================================================
+    # CRAWL
+    # ========================================================
+
+    crawler = (
+        ProfessionalSearchCrawler(
+            existing_urls
+        )
     )
 
     try:
 
         asyncio.run(
-            crawler.run(SEEDS)
+            crawler.run(
+                SEEDS
+            )
         )
 
     except KeyboardInterrupt:
 
         print(
-            "[CRAWLER] Dihentikan."
+            "[CRAWLER] Dihentikan manual."
         )
 
     except Exception as exc:
 
         print(
-            f"[FATAL CRAWLER ERROR] {exc}"
+            f"[FATAL CRAWLER ERROR] "
+            f"{exc}"
         )
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # SUMMARY
-    # --------------------------------------------------------
+    # ========================================================
 
     print()
     print("=" * 60)
@@ -1625,47 +2115,114 @@ def main():
     print("=" * 60)
 
     print(
-        f"Documents : {len(documents):,}"
+        f"Documents : "
+        f"{len(documents):,}"
     )
 
     print(
-        f"Graph     : {len(graph_edges):,}"
+        f"Graph     : "
+        f"{len(graph_edges):,}"
     )
 
     print(
-        f"Crawled   : {stats['crawled']:,}"
+        f"Crawled   : "
+        f"{stats['crawled']:,}"
     )
 
     print(
-        f"Errors    : {stats['errors']:,}"
+        f"Errors    : "
+        f"{stats['errors']:,}"
     )
 
     print(
-        f"Elapsed   : {elapsed_seconds()}s"
+        f"Elapsed   : "
+        f"{elapsed_seconds()}s"
+    )
+
+    print(
+        f"Remaining : "
+        f"{int(remaining_seconds())}s"
     )
 
     print("=" * 60)
 
-    # --------------------------------------------------------
+    # ========================================================
     # UPLOAD DOCUMENTS
-    # --------------------------------------------------------
+    # ========================================================
 
     if documents:
 
-        upload_documents_to_d1()
+        if time_exceeded():
 
-    # --------------------------------------------------------
+            print(
+                "[D1] "
+                "Tidak upload documents "
+                "karena deadline global "
+                "sudah tercapai."
+            )
+
+        else:
+
+            upload_documents_to_d1()
+
+    # ========================================================
     # UPLOAD GRAPH
-    # --------------------------------------------------------
+    # ========================================================
 
     if graph_edges:
 
-        upload_graph_to_d1()
+        if time_exceeded():
+
+            print(
+                "[D1] "
+                "Tidak upload graph "
+                "karena deadline global "
+                "sudah tercapai."
+            )
+
+        else:
+
+            upload_graph_to_d1()
+
+    # ========================================================
+    # FINAL
+    # ========================================================
 
     print()
+    print("=" * 60)
+    print("DEEVV CRAWLER SELESAI")
+    print("=" * 60)
+
     print(
-        "[DONE] Semua proses selesai."
+        f"Total runtime : "
+        f"{elapsed_seconds()}s"
     )
+
+    print(
+        f"Documents     : "
+        f"{len(documents):,}"
+    )
+
+    print(
+        f"Graph edges   : "
+        f"{len(graph_edges):,}"
+    )
+
+    if elapsed_seconds() >= MAX_RUN_SECONDS:
+
+        print(
+            "Status        : "
+            "TIME LIMIT REACHED"
+        )
+
+    else:
+
+        print(
+            "Status        : "
+            "COMPLETED"
+        )
+
+    print("=" * 60)
 
 
 if __name__ == "__main__":
