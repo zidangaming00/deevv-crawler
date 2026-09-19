@@ -1,5 +1,4 @@
 import asyncio
-import math
 import os
 import re
 import sys
@@ -8,8 +7,8 @@ from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
 import aiohttp
+import requests
 from bs4 import BeautifulSoup
-import libsql_client  # <-- Driver baru untuk Turso
 
 # --- CONFIGURATION ---
 MAX_RUN_SECONDS = 1200  
@@ -18,14 +17,29 @@ MAX_URL_LENGTH = 200
 MAX_PATH_DEPTH = 6      
 MAX_PAGES_PER_DOMAIN = 40  
 
-AUTHORITY_DOMAINS_SUFFIX = ('google.com', 'wikipedia.org')
+# Secrets dari Cloudflare via Environment Variables GitHub
+CF_ACCOUNT_ID = os.getenv('CLOUDFLARE_ACCOUNT_ID')
+CF_DATABASE_ID = os.getenv('CLOUDFLARE_DATABASE_ID')
+CF_API_TOKEN = os.getenv('CLOUDFLARE_API_TOKEN')
 
-# Secrets dari Turso via Environment Variables GitHub
-TURSO_URL = os.getenv('TURSO_DATABASE_URL')
-TURSO_TOKEN = os.getenv('TURSO_AUTH_TOKEN')
+def execute_d1_queries(queries):
+    """Fungsi helper untuk mengeksekusi query ke Cloudflare D1 via REST API"""
+    if not CF_ACCOUNT_ID or not CF_DATABASE_ID or not CF_API_TOKEN:
+        print('[CRITICAL ERROR] Kredensial Cloudflare D1 tidak lengkap di GitHub Secrets!')
+        sys.exit(1)
+
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_DATABASE_ID}/query"
+    headers = {
+        "Authorization": f"Bearer {CF_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    response = requests.post(url, headers=headers, json=queries)
+    if response.status_code != 200:
+        print(f"[ERROR D1 API] {response.text}")
+    return response.json()
 
 class ProfessionalSearchCrawler:
-
     def __init__(self, seed_urls, max_run_seconds=MAX_RUN_SECONDS, concurrency=CONCURRENCY):
         self.seed_urls = seed_urls
         self.max_run_seconds = max_run_seconds
@@ -56,10 +70,7 @@ class ProfessionalSearchCrawler:
         }
 
     def is_spam_domain(self, domain):
-        spam_tlds = (
-            '.cn', '.xyz', '.top', '.pw', '.tk', '.ml', '.ga', '.cf', '.gq',
-            '.wang', '.icu', '.best', '.monster', '.work', '.click', '.loan'
-        )
+        spam_tlds = ('.cn', '.xyz', '.top', '.pw', '.tk', '.ml', '.ga', '.cf', '.gq', '.wang', '.icu', '.best', '.monster', '.work', '.click', '.loan')
         return any(domain.endswith(tld) for tld in spam_tlds)
 
     def is_spider_trap(self, url):
@@ -70,14 +81,8 @@ class ProfessionalSearchCrawler:
         if len(path_segments) > MAX_PATH_DEPTH: return True
         if re.search(r'/(.+?)/\1/', path): return True
 
-        trap_keywords = (
-            'login', 'register', 'signup', 'signin', 'logout', 'cart', 'checkout',
-            'add-to-cart', 'replytocom', 'wp-json', 'xmlrpc.php', 'calendar',
-            'event', 'archive', 'share.php', 'print', 'action=', 'do=', 'redirect=',
-            'goto=', 'feed/', 'rss/', 'trackback/'
-        )
-        if any(keyword in url.lower() for keyword in trap_keywords): return True
-        return False
+        trap_keywords = ('login', 'register', 'signup', 'signin', 'logout', 'cart', 'checkout', 'add-to-cart', 'replytocom', 'wp-json', 'xmlrpc.php', 'calendar', 'event', 'archive', 'share.php', 'print', 'action=', 'do=', 'redirect=', 'goto=', 'feed/', 'rss/', 'trackback/')
+        return any(keyword in url.lower() for keyword in trap_keywords)
 
     def clean_url_string(self, url):
         parsed = urlparse(url)
@@ -108,11 +113,7 @@ class ProfessionalSearchCrawler:
 
     def is_valid_url(self, url):
         parsed = urlparse(url)
-        invalid_exts = (
-            '.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip', '.rar', '.7z',
-            '.css', '.js', '.svg', '.mp4', '.mp3', '.webp', '.xml', '.json',
-            '.ico', '.exe', '.dmg', '.iso', '.csv', '.xlsx', '.doc', '.docx'
-        )
+        invalid_exts = ('.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip', '.rar', '.7z', '.css', '.js', '.svg', '.mp4', '.mp3', '.webp', '.xml', '.json', '.ico', '.exe', '.dmg', '.iso', '.csv', '.xlsx', '.doc', '.docx')
         if any(parsed.path.lower().endswith(ext) for ext in invalid_exts): return False
         return bool(parsed.netloc) and parsed.scheme in ['http', 'https']
 
@@ -126,13 +127,14 @@ class ProfessionalSearchCrawler:
                 if response.status == 200 and 'text/html' in content_type:
                     html = await response.text()
                     final_url = self.clean_url_string(str(response.url))
-                    return final_url, html
+                    last_mod = response.headers.get('Last-Modified') or response.headers.get('Date')
+                    return final_url, html, last_mod
                 else:
-                    return None, None
+                    return None, None, None
         except Exception:
-            return None, None
+            return None, None, None
 
-    async def process_page(self, url, html):
+    async def process_page(self, url, html, last_mod_header):
         soup = BeautifulSoup(html, 'html.parser')
         domain_name = urlparse(url).netloc
 
@@ -144,11 +146,7 @@ class ProfessionalSearchCrawler:
         title = self.clean_text(title_tag.get_text()) if title_tag else domain_name
 
         snippet = ""
-        meta_desc = (
-            soup.find('meta', attrs={'name': re.compile(r'^description$', re.I)}) or
-            soup.find('meta', attrs={'property': re.compile(r'^og:description$', re.I)}) or
-            soup.find('meta', attrs={'name': re.compile(r'^twitter:description$', re.I)})
-        )
+        meta_desc = soup.find('meta', attrs={'name': re.compile(r'^description$', re.I)}) or soup.find('meta', attrs={'property': re.compile(r'^og:description$', re.I)}) or soup.find('meta', attrs={'name': re.compile(r'^twitter:description$', re.I)})
         if meta_desc and meta_desc.get('content'):
             cand = self.clean_text(meta_desc['content'])
             if len(cand) > 30: snippet = cand
@@ -174,6 +172,13 @@ class ProfessionalSearchCrawler:
 
         og_image = soup.find('meta', attrs={'property': lambda x: x and x.lower() == 'og:image'})
         thumbnail = urljoin(url, og_image['content']) if (og_image and og_image.get('content')) else ''
+
+        # Ekstrak last_modified dari meta property jika header kosong
+        last_modified = last_mod_header
+        if not last_modified:
+            meta_mod = soup.find('meta', attrs={'property': lambda x: x and 'modified_time' in x.lower()}) or soup.find('meta', attrs={'property': lambda x: x and 'published_time' in x.lower()})
+            if meta_mod and meta_mod.get('content'):
+                last_modified = meta_mod['content']
 
         outgoing_links = set()
         for link in soup.find_all('a', href=True):
@@ -208,14 +213,14 @@ class ProfessionalSearchCrawler:
                         if target_domain.count('.') > 1 and "www" not in target_domain: priority_score -= 5
                         await self.queue.put((priority_score, clean_url))
 
-        # Hapus inisiasi pagerank, karena akan diurus worker terpisah
         self.pages_data[url] = {
             'url': url,
             'domain': domain_name,
             'title': title,
             'snippet': snippet,
             'favicon': favicon,
-            'thumbnail': thumbnail
+            'thumbnail': thumbnail,
+            'last_modified': last_modified
         }
         self.graph[url] = list(outgoing_links)
 
@@ -243,10 +248,10 @@ class ProfessionalSearchCrawler:
                     if len(self.pages_data) % 10 == 0 and len(self.pages_data) > 0:
                         print(f'[{elapsed}s/{self.max_run_seconds}s] [{len(self.pages_data)} terindeks] Merayapi: {url}')
 
-                    final_url, html = await self.fetch(session, url)
+                    final_url, html, last_mod = await self.fetch(session, url)
                     if html:
                         try:
-                            await self.process_page(final_url or url, html)
+                            await self.process_page(final_url or url, html, last_mod)
                         except Exception:
                             pass
             finally:
@@ -265,128 +270,103 @@ class ProfessionalSearchCrawler:
             tasks = [asyncio.create_task(self.worker(session)) for _ in range(self.concurrency)]
             await asyncio.gather(*tasks, return_exceptions=True)
 
-def get_already_visited_urls_turso():
-    if not TURSO_URL or not TURSO_TOKEN:
-        print('[CRITICAL ERROR] Secrets Turso belum terpasang di GitHub Variables!')
-        sys.exit(1)
-
+def get_already_visited_urls_d1():
     visited = set()
-    print('\n[TURSO SYNC] Mengambil daftar URL lama dari database Turso...')
+    print('\n[CLOUDFLARE SYNC] Mengambil daftar URL lama dari D1...')
     
     try:
-        # Gunakan sync client agar proses fetching tidak tumpang tindih dengan event loop
-        client = libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
-        result = client.execute("SELECT url FROM documents")
+        queries = [{"sql": "SELECT url FROM documents"}]
+        data = execute_d1_queries(queries)
         
-        for row in result.rows:
-            url_val = row[0]
-            if url_val:
-                parsed = urlparse(url_val)
-                clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                if len(clean) > len(f"{parsed.scheme}://{parsed.netloc}/") and clean.endswith('/'):
-                    clean = clean[:-1]
-                visited.add(clean)
-                
-        client.close()
-        print(f'[TURSO SYNC DONE] Terbaca: {len(visited)} URL lama berhasil disinkronisasi!')
+        if data.get('success'):
+            results = data['result'][0]['results']
+            for row in results:
+                url_val = row['url']
+                if url_val:
+                    parsed = urlparse(url_val)
+                    clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                    if len(clean) > len(f"{parsed.scheme}://{parsed.netloc}/") and clean.endswith('/'):
+                        clean = clean[:-1]
+                    visited.add(clean)
+            print(f'[CLOUDFLARE SYNC DONE] Terbaca: {len(visited)} URL lama berhasil disinkronisasi!')
+        else:
+            print(f"[CLOUDFLARE SYNC ERROR] Gagal sync URL: {data}")
     except Exception as e:
-        print(f'[TURSO SYNC WARNING] Gagal sync URL: {e}')
+        print(f'[CLOUDFLARE SYNC WARNING] Exception: {e}')
         
     return visited
 
-def push_to_turso(crawled_data, graph_data, batch_size=50):
-    if not TURSO_URL or not TURSO_TOKEN:
-        print('[ERROR] Secrets Turso belum terpasang!')
-        return
+def push_to_d1(crawled_data, graph_data, batch_size=50):
+    print(f'\n[CLOUDFLARE PUSH] Memulai upload {len(crawled_data)} dokumen ke D1...')
 
-    print(f'\n[TURSO PUSH] Memulai upload {len(crawled_data)} dokumen ke Turso...')
-    client = libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
-
-    try:
-        # 1. Simpan/Update Dokumen (Tanpa PageRank)
-        chunks = [crawled_data[i:i + batch_size] for i in range(0, len(crawled_data), batch_size)]
-        success_docs = 0
+    chunks = [crawled_data[i:i + batch_size] for i in range(0, len(crawled_data), batch_size)]
+    success_docs = 0
+    
+    for chunk_idx, chunk in enumerate(chunks):
+        queries = []
+        for page in chunk:
+            queries.append({
+                "sql": """
+                    INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, created_at, last_modified)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                    ON CONFLICT(url) DO UPDATE SET
+                        title=excluded.title,
+                        snippet=excluded.snippet,
+                        favicon=excluded.favicon,
+                        thumbnail=excluded.thumbnail,
+                        last_modified=COALESCE(excluded.last_modified, documents.last_modified);
+                """,
+                "params": [page['url'], page['domain'], page['title'], page['snippet'], page['favicon'], page['thumbnail'], page.get('last_modified')]
+            })
         
-        for chunk_idx, chunk in enumerate(chunks):
-            batch_payload = []
-            for page in chunk:
-                batch_payload.append(
-                    libsql_client.Statement(
-                        """
-                        INSERT INTO documents (url, domain, title, snippet, favicon, thumbnail, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(url) DO UPDATE SET
-                            title=excluded.title,
-                            snippet=excluded.snippet,
-                            favicon=excluded.favicon,
-                            thumbnail=excluded.thumbnail;
-                        """,
-                        [page['url'], page['domain'], page['title'], page['snippet'], page['favicon'], page['thumbnail']]
-                    )
-                )
-            
-            try:
-                client.batch(batch_payload)
+        try:
+            res = execute_d1_queries(queries)
+            if res.get('success'):
                 success_docs += len(chunk)
-                print(f'[TURSO PUSH] Batch Dokumen {chunk_idx + 1}/{len(chunks)} OK')
-            except Exception as e:
-                print(f'[TURSO PUSH ERROR] Batch Dokumen {chunk_idx + 1} gagal: {e}')
+                print(f'[CLOUDFLARE PUSH] Batch Dokumen {chunk_idx + 1}/{len(chunks)} OK')
+            else:
+                print(f'[CLOUDFLARE PUSH ERROR] Batch {chunk_idx + 1} Error API: {res}')
+        except Exception as e:
+            print(f'[CLOUDFLARE PUSH ERROR] Batch Dokumen {chunk_idx + 1} exception: {e}')
 
-        # 2. Simpan Relasi Graph (Untuk dihitung PageRank-nya oleh Worker lain nanti)
-        print(f'\n[TURSO PUSH] Menyimpan struktur graph link...')
-        graph_queries = []
-        for source, targets in graph_data.items():
-            for target in targets:
-                if source != target:  # Hindari link ke diri sendiri
-                    graph_queries.append(
-                        libsql_client.Statement(
-                            """
-                            INSERT INTO page_graph (source_url, target_url)
-                            VALUES (?, ?)
-                            ON CONFLICT(source_url, target_url) DO NOTHING;
-                            """,
-                            [source, target]
-                        )
-                    )
-                    
-        # Eksekusi graph per 200 query agar tidak membebani limit API
-        graph_chunks = [graph_queries[i:i + 200] for i in range(0, len(graph_queries), 200)]
-        for i, g_chunk in enumerate(graph_chunks):
-            try:
-                client.batch(g_chunk)
-            except Exception as e:
-                print(f'[TURSO PUSH ERROR] Batch Graph {i + 1} gagal: {e}')
+    print(f'\n[CLOUDFLARE PUSH] Menyimpan struktur graph link...')
+    graph_queries = []
+    for source, targets in graph_data.items():
+        for target in targets:
+            if source != target:
+                graph_queries.append({
+                    "sql": """
+                        INSERT INTO page_graph (source_url, target_url)
+                        VALUES (?, ?)
+                        ON CONFLICT(source_url, target_url) DO NOTHING;
+                    """,
+                    "params": [source, target]
+                })
+                
+    graph_chunks = [graph_queries[i:i + 100] for i in range(0, len(graph_queries), 100)]
+    for i, g_chunk in enumerate(graph_chunks):
+        try:
+            execute_d1_queries(g_chunk)
+        except Exception as e:
+            print(f'[CLOUDFLARE PUSH ERROR] Batch Graph {i + 1} gagal: {e}')
 
-        print(f'[TURSO FINISH] Selesai! {success_docs} dokumen dan relasinya berhasil disimpan di Turso.')
-
-    finally:
-        client.close()
+    print(f'[CLOUDFLARE FINISH] Selesai! {success_docs} dokumen dan relasinya berhasil disimpan di D1.')
 
 if __name__ == '__main__':
     initial_seeds = [
-        'https://www.google.com', 'https://www.google.co.id', 'https://duckduckgo.com',
-        'https://www.bing.com', 'https://www.yahoo.com', 'https://www.ecosia.org',
-        'https://id.wikipedia.org', 'https://en.wikipedia.org', 'https://id.wikihow.com',
-        'https://brainly.co.id', 'https://www.kompas.com', 'https://www.detik.com',
-        'https://www.liputan6.com', 'https://www.tribunnews.com', 'https://www.cnnindonesia.com',
-        'https://www.antaraNews.com', 'https://www.tempo.co', 'https://www.cnbcindonesia.com',
-        'https://www.bbc.com', 'https://www.theverge.com', 'https://techcrunch.com',
-        'https://www.wired.com', 'https://github.com', 'https://stackoverflow.com',
-        'https://developer.mozilla.org', 'https://www.w3schools.com', 'https://dev.to',
-        'https://medium.com', 'https://news.ycombinator.com', 'https://www.minecraft.net',
-        'https://store.steampowered.com', 'https://www.epicgames.com', 'https://www.roblox.com',
-        'https://m.mobilelegends.com', 'https://ff.garena.com', 'https://www.ign.com',
-        'https://www.gamespot.com', 'https://oneesports.gg/id', 'https://www.hltv.org',
-        'https://liquipedia.net', 'https://www.codashop.com/id-id', 'https://www.unipin.com',
-        'https://www.itemku.com', 'https://kiosgamer.co.id', 'https://www.kaskus.co.id',
-        'https://id.quora.com', 'https://www.reddit.com', 'https://stackexchange.com',
-        'https://indonesia.go.id', 'https://www.kemdikbud.go.id', 'https://www.kominfo.go.id',
-        'https://www.bps.go.id', 'https://www.pajak.go.id', 'https://www.ui.ac.id',
-        'https://www.itb.ac.id', 'https://www.ugm.ac.id', 'https://www.ut.ac.id',
+        'https://www.google.com', 'https://www.google.co.id', 'https://duckduckgo.com', 'https://www.bing.com', 
+        'https://id.wikipedia.org', 'https://en.wikipedia.org', 'https://www.kompas.com', 'https://www.detik.com',
+        'https://www.liputan6.com', 'https://www.tribunnews.com', 'https://www.cnnindonesia.com', 'https://www.tempo.co',
+        'https://www.cnbcindonesia.com', 'https://www.bbc.com', 'https://www.theverge.com', 'https://techcrunch.com',
+        'https://github.com', 'https://stackoverflow.com', 'https://developer.mozilla.org', 'https://dev.to',
+        'https://news.ycombinator.com', 'https://www.minecraft.net', 'https://store.steampowered.com',
+        'https://m.mobilelegends.com', 'https://ff.garena.com', 'https://www.hltv.org', 'https://liquipedia.net',
+        'https://id.quora.com', 'https://www.reddit.com', 'https://indonesia.go.id', 'https://www.kemdikbud.go.id',
+        'https://www.kominfo.go.id', 'https://www.bps.go.id', 'https://www.ui.ac.id', 'https://www.itb.ac.id',
         'https://www.behance.net', 'https://dribbble.com', 'https://id.pinterest.com',
     ]
 
-    existing_urls = get_already_visited_urls_turso()
+    existing_urls = get_already_visited_urls_d1()
 
     crawler = ProfessionalSearchCrawler(
         seed_urls=initial_seeds,
@@ -396,15 +376,13 @@ if __name__ == '__main__':
 
     crawler.visited_urls.update(existing_urls)
 
-    print("\n[START CRAWLER] Memulai perayapan web (Maksimal 1 Jam)...")
+    print("\n[START CRAWLER] Memulai perayapan web D1 (Maksimal 1 Jam)...")
     asyncio.run(crawler.run())
 
-    # Ekstraksi hasil crawl
     crawled_results = list(crawler.pages_data.values())
     graph_results = crawler.graph
 
     if crawled_results:
-        # Jalankan fungsi push secara sinkron (karena asyncio sudah selesai)
-        push_to_turso(crawled_results, graph_results)
+        push_to_d1(crawled_results, graph_results)
     else:
         print("\n[INFO] Tidak ada halaman baru yang dicrawl. Skip upload.")
