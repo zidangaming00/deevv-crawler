@@ -16,28 +16,62 @@ from bs4 import BeautifulSoup
 # CONFIGURATION
 # ============================================================
 
-# HARD LIMIT SELURUH PROGRAM
-MAX_RUN_SECONDS = 3600
+# ============================================================
+# CRAWL TIME
+# ============================================================
 
-# Sisakan waktu untuk upload D1 setelah crawling berhenti.
-# 55 menit crawling + maksimal 5 menit upload.
-CRAWL_RESERVE_SECONDS = 300
+# Maksimal waktu CRAWLING.
+#
+# PENTING:
+# Timer ini hanya berlaku untuk proses crawling.
+# Upload D1 TIDAK dibatasi oleh timer ini.
+CRAWL_MAX_SECONDS = 3600
 
-CRAWL_MAX_SECONDS = (
-    MAX_RUN_SECONDS - CRAWL_RESERVE_SECONDS
-)
+
+# ============================================================
+# CRAWLER
+# ============================================================
 
 CONCURRENCY = 15
 
 MAX_URL_LENGTH = 200
 MAX_PATH_DEPTH = 6
-MAX_PAGES_PER_DOMAIN = 40
+
+# Dinaikkan dari 40 -> 100 halaman per domain.
+MAX_PAGES_PER_DOMAIN = 100
+
+
+# ============================================================
+# D1
+# ============================================================
 
 # Jumlah statement dalam satu request REST D1.
 D1_BATCH_SIZE = 50
 
-D1_REQUEST_TIMEOUT = 30
-D1_RETRY_COUNT = 3
+# Timeout per request D1.
+#
+# Ini BUKAN global timeout.
+# Setiap request boleh berjalan sampai batas ini.
+#
+# 40 detik dibuat agak longgar supaya tidak terlalu sensitif
+# terhadap koneksi lambat.
+D1_REQUEST_TIMEOUT = 40
+
+# Jumlah maksimum percobaan.
+D1_RETRY_COUNT = 5
+
+# Jeda antar retry.
+D1_RETRY_BACKOFF = [
+    3,
+    6,
+    10,
+    15,
+]
+
+
+# ============================================================
+# HTTP CRAWLER
+# ============================================================
 
 HTTP_TIMEOUT = 8
 ROBOTS_TIMEOUT = 4
@@ -62,7 +96,12 @@ CF_API_TOKEN = os.getenv("CF_API_TOKEN")
 # GLOBAL STATE
 # ============================================================
 
-START_TIME = time.monotonic()
+# Timer crawling.
+#
+# TIDAK langsung dimulai ketika program start.
+# Akan di-reset tepat sebelum crawling dimulai.
+CRAWL_START_TIME = None
+
 
 visited_urls = set()
 queued_urls = set()
@@ -73,6 +112,7 @@ documents = []
 graph_edges = []
 
 robots_cache = {}
+
 
 stats = {
     "crawled": 0,
@@ -87,36 +127,36 @@ stats = {
 # TIME CONTROL
 # ============================================================
 
-def elapsed_seconds():
+def crawl_elapsed_seconds():
+    """
+    Mengembalikan waktu yang sudah digunakan khusus crawling.
+    """
+
+    if CRAWL_START_TIME is None:
+        return 0
+
     return int(
-        time.monotonic() - START_TIME
-    )
-
-
-def remaining_seconds():
-    return max(
-        0,
-        MAX_RUN_SECONDS
-        - (
-            time.monotonic()
-            - START_TIME
-        ),
+        time.monotonic()
+        - CRAWL_START_TIME
     )
 
 
 def crawl_remaining_seconds():
+    """
+    Sisa waktu crawling.
+    """
+
+    if CRAWL_START_TIME is None:
+        return CRAWL_MAX_SECONDS
+
     return max(
         0,
         CRAWL_MAX_SECONDS
         - (
             time.monotonic()
-            - START_TIME
+            - CRAWL_START_TIME
         ),
     )
-
-
-def time_exceeded():
-    return remaining_seconds() <= 0
 
 
 def crawl_time_exceeded():
@@ -128,6 +168,7 @@ def crawl_time_exceeded():
 # ============================================================
 
 def get_d1_api_url():
+
     return (
         "https://api.cloudflare.com/client/v4/"
         f"accounts/{CF_ACCOUNT_ID}/"
@@ -135,22 +176,52 @@ def get_d1_api_url():
     )
 
 
+def is_retryable_http_status(
+    status_code,
+):
+    """
+    Hanya error yang kemungkinan sementara
+    yang boleh di-retry.
+    """
+
+    return status_code in {
+        408,
+        429,
+        500,
+        502,
+        503,
+        504,
+    }
+
+
+def get_retry_sleep(
+    attempt,
+):
+    """
+    attempt:
+      1 = retry pertama
+      2 = retry kedua
+      dst.
+    """
+
+    index = min(
+        attempt - 1,
+        len(D1_RETRY_BACKOFF) - 1,
+    )
+
+    return D1_RETRY_BACKOFF[index]
+
+
 def d1_request(batch):
     """
     Kirim batch SQL ke Cloudflare D1.
 
-    Format REST API D1:
-
-    {
-        "batch": [
-            {
-                "sql": "...",
-                "params": [...]
-            }
-        ]
-    }
-
-    Tidak melakukan request test tambahan.
+    PENTING:
+    - Tidak terikat timer crawling.
+    - Tidak menggunakan crawl_remaining_seconds().
+    - Timeout berlaku per HTTP request.
+    - Timeout/network/429/5xx akan di-retry.
+    - Error SQL 400 tidak akan diulang berkali-kali.
     """
 
     if not CF_ACCOUNT_ID:
@@ -170,14 +241,6 @@ def d1_request(batch):
 
     if not batch:
         return None
-
-    # Jangan mulai request kalau deadline sudah habis.
-    remaining = remaining_seconds()
-
-    if remaining <= 0:
-        raise TimeoutError(
-            "Global deadline D1 tercapai."
-        )
 
     url = get_d1_api_url()
 
@@ -199,31 +262,17 @@ def d1_request(batch):
         D1_RETRY_COUNT + 1,
     ):
 
-        remaining = remaining_seconds()
-
-        if remaining <= 0:
-            raise TimeoutError(
-                "Global deadline tercapai "
-                "sebelum request D1."
-            )
-
-        # Jangan membuat timeout request lebih lama
-        # daripada waktu global yang tersisa.
-        request_timeout = min(
-            D1_REQUEST_TIMEOUT,
-            max(1, int(remaining)),
-        )
-
         try:
 
             response = requests.post(
                 url,
                 headers=headers,
                 json=payload,
-                timeout=request_timeout,
+                timeout=D1_REQUEST_TIMEOUT,
             )
 
             try:
+
                 data = response.json()
 
             except Exception:
@@ -239,6 +288,10 @@ def d1_request(batch):
                     ],
                 }
 
+            # ==================================================
+            # HTTP ERROR
+            # ==================================================
+
             if response.status_code != 200:
 
                 last_error = (
@@ -246,68 +299,119 @@ def d1_request(batch):
                     f"{data}"
                 )
 
+                # ----------------------------------------------
+                # ERROR PERMANEN
+                # ----------------------------------------------
+
+                if not is_retryable_http_status(
+                    response.status_code
+                ):
+
+                    print(
+                        f"[D1 ERROR] "
+                        f"HTTP "
+                        f"{response.status_code}"
+                    )
+
+                    print(
+                        "[D1] "
+                        "Error tidak dianggap "
+                        "retryable. "
+                        "Request dihentikan."
+                    )
+
+                    raise RuntimeError(
+                        last_error
+                    )
+
+                # ----------------------------------------------
+                # ERROR SEMENTARA
+                # ----------------------------------------------
+
                 print(
-                    f"[D1 ERROR] "
+                    f"[D1 RETRY] "
                     f"Attempt "
                     f"{attempt}/"
-                    f"{D1_RETRY_COUNT}: "
-                    f"{last_error}"
+                    f"{D1_RETRY_COUNT} | "
+                    f"HTTP "
+                    f"{response.status_code}"
                 )
 
                 if attempt < D1_RETRY_COUNT:
 
-                    sleep_time = min(
-                        2 * attempt,
-                        5,
-                        max(
-                            0,
-                            remaining_seconds(),
-                        ),
+                    sleep_time = (
+                        get_retry_sleep(
+                            attempt
+                        )
                     )
 
-                    if sleep_time > 0:
-                        time.sleep(
-                            sleep_time
-                        )
+                    print(
+                        f"[D1] "
+                        f"Menunggu "
+                        f"{sleep_time}s "
+                        f"sebelum retry..."
+                    )
+
+                    time.sleep(
+                        sleep_time
+                    )
 
                 continue
+
+            # ==================================================
+            # CLOUDFLARE API SUCCESS FALSE
+            # ==================================================
 
             if not data.get(
                 "success",
                 False,
             ):
 
+                errors = data.get(
+                    "errors",
+                    [],
+                )
+
                 last_error = str(
-                    data.get("errors")
+                    errors
                 )
 
                 print(
-                    f"[D1 ERROR] "
+                    f"[D1 SQL ERROR] "
                     f"Attempt "
                     f"{attempt}/"
                     f"{D1_RETRY_COUNT}: "
                     f"{last_error}"
                 )
 
-                if attempt < D1_RETRY_COUNT:
+                # ----------------------------------------------
+                # JANGAN RETRY SQL ERROR
+                # ----------------------------------------------
+                #
+                # Contoh:
+                #
+                # SQLITE_ERROR
+                # SQLITE_CORRUPT
+                # SQLITE_CONSTRAINT
+                #
+                # Retry batch yang sama tidak memperbaiki
+                # SQL/database yang memang rusak.
+                #
 
-                    sleep_time = min(
-                        2 * attempt,
-                        5,
-                        max(
-                            0,
-                            remaining_seconds(),
-                        ),
-                    )
+                raise RuntimeError(
+                    "D1 SQL error: "
+                    f"{last_error}"
+                )
 
-                    if sleep_time > 0:
-                        time.sleep(
-                            sleep_time
-                        )
-
-                continue
+            # ==================================================
+            # SUCCESS
+            # ==================================================
 
             return data
+
+        # ======================================================
+        # REQUEST TIMEOUT
+        # ======================================================
 
         except requests.Timeout as exc:
 
@@ -323,7 +427,26 @@ def d1_request(batch):
             )
 
             if attempt < D1_RETRY_COUNT:
-                continue
+
+                sleep_time = (
+                    get_retry_sleep(
+                        attempt
+                    )
+                )
+
+                print(
+                    f"[D1] "
+                    f"Retry dalam "
+                    f"{sleep_time}s..."
+                )
+
+                time.sleep(
+                    sleep_time
+                )
+
+        # ======================================================
+        # NETWORK ERROR
+        # ======================================================
 
         except requests.RequestException as exc:
 
@@ -339,19 +462,30 @@ def d1_request(batch):
 
             if attempt < D1_RETRY_COUNT:
 
-                sleep_time = min(
-                    2 * attempt,
-                    5,
-                    max(
-                        0,
-                        remaining_seconds(),
-                    ),
+                sleep_time = (
+                    get_retry_sleep(
+                        attempt
+                    )
                 )
 
-                if sleep_time > 0:
-                    time.sleep(
-                        sleep_time
-                    )
+                print(
+                    f"[D1] "
+                    f"Retry dalam "
+                    f"{sleep_time}s..."
+                )
+
+                time.sleep(
+                    sleep_time
+                )
+
+        # ======================================================
+        # RuntimeError
+        # ======================================================
+
+        except RuntimeError:
+
+            # Error SQL/permanent langsung diteruskan.
+            raise
 
     raise RuntimeError(
         "D1 request gagal setelah "
@@ -383,7 +517,9 @@ def get_already_visited_urls_d1():
 
     try:
 
-        data = d1_request(batch)
+        data = d1_request(
+            batch
+        )
 
         urls = set()
 
@@ -438,7 +574,9 @@ def normalize_url(url):
 
     try:
 
-        parsed = urlparse(url)
+        parsed = urlparse(
+            url
+        )
 
         if parsed.scheme not in (
             "http",
@@ -482,6 +620,7 @@ def normalize_url(url):
         return normalized
 
     except Exception:
+
         return None
 
 
@@ -504,6 +643,7 @@ def get_domain(url):
         return hostname
 
     except Exception:
+
         return ""
 
 
@@ -524,6 +664,7 @@ def get_path_depth(url):
         return len(parts)
 
     except Exception:
+
         return 999
 
 
@@ -535,7 +676,9 @@ def is_valid_url(url):
     if len(url) > MAX_URL_LENGTH:
         return False
 
-    parsed = urlparse(url)
+    parsed = urlparse(
+        url
+    )
 
     if parsed.scheme not in (
         "http",
@@ -593,7 +736,9 @@ TRAP_PATTERNS = [
 
 def is_spam_domain(url):
 
-    hostname = get_domain(url)
+    hostname = get_domain(
+        url
+    )
 
     return any(
         hostname.endswith(tld)
@@ -622,16 +767,10 @@ async def can_fetch_robots(
     session,
     url,
 ):
-    """
-    Async robots checker.
 
-    Versi lama memakai RobotFileParser.read(),
-    yang synchronous dan bisa menggantung.
-
-    Sekarang robots.txt punya timeout nyata.
-    """
-
-    domain = get_domain(url)
+    domain = get_domain(
+        url
+    )
 
     if not domain:
         return False
@@ -642,7 +781,9 @@ async def can_fetch_robots(
     if crawl_time_exceeded():
         return False
 
-    parsed = urlparse(url)
+    parsed = urlparse(
+        url
+    )
 
     robots_url = (
         f"{parsed.scheme}://"
@@ -666,9 +807,9 @@ async def can_fetch_robots(
 
             if response.status >= 400:
 
-                # Kalau robots tidak tersedia,
-                # izinkan crawler melanjutkan.
-                robots_cache[domain] = True
+                robots_cache[
+                    domain
+                ] = True
 
                 return True
 
@@ -687,15 +828,19 @@ async def can_fetch_robots(
                 url,
             )
 
-            robots_cache[domain] = allowed
+            robots_cache[
+                domain
+            ] = allowed
 
             return allowed
 
     except Exception:
 
-        # Timeout/error robots tidak boleh
-        # membuat crawler menggantung.
-        robots_cache[domain] = True
+        # Kalau robots gagal diambil,
+        # jangan biarkan crawler menggantung.
+        robots_cache[
+            domain
+        ] = True
 
         return True
 
@@ -932,6 +1077,7 @@ def extract_language(soup):
     )
 
     if language:
+
         return clean_text(
             language
         )[:20]
@@ -1232,8 +1378,7 @@ class ProfessionalSearchCrawler:
         if count >= MAX_PAGES_PER_DOMAIN:
             return
 
-        # IMPORTANT:
-        # robots sekarang async + timeout.
+        # Robots async + timeout.
         allowed = await can_fetch_robots(
             self.session,
             normalized,
@@ -1493,7 +1638,7 @@ class ProfessionalSearchCrawler:
                         f"graph="
                         f"{stats['graph']:,} "
                         f"time="
-                        f"{elapsed_seconds()}s "
+                        f"{crawl_elapsed_seconds()}s "
                         f"remaining="
                         f"{int(crawl_remaining_seconds())}s"
                     )
@@ -1557,7 +1702,7 @@ class ProfessionalSearchCrawler:
             ]
 
             # ====================================================
-            # HARD TIMEOUT QUEUE
+            # HARD CRAWL TIMEOUT
             # ====================================================
 
             remaining = (
@@ -1590,7 +1735,8 @@ class ProfessionalSearchCrawler:
                     print(
                         "[CRAWLER] "
                         f"Berhenti setelah "
-                        f"{elapsed_seconds()} detik."
+                        f"{crawl_elapsed_seconds()} "
+                        "detik."
                     )
 
             else:
@@ -1603,7 +1749,7 @@ class ProfessionalSearchCrawler:
         finally:
 
             # ====================================================
-            # SELALU CANCEL WORKER
+            # CANCEL WORKERS
             # ====================================================
 
             for worker in workers:
@@ -1618,10 +1764,18 @@ class ProfessionalSearchCrawler:
                     return_exceptions=True,
                 )
 
-            # Pastikan session selalu ditutup.
-            await self.session.close()
+            # ====================================================
+            # CLOSE SESSION
+            # ====================================================
 
-            # Bersihkan queue references.
+            if self.session:
+
+                await self.session.close()
+
+            # ====================================================
+            # CLEAN QUEUE REFERENCES
+            # ====================================================
+
             queued_urls.clear()
 
 
@@ -1683,22 +1837,28 @@ def upload_documents_to_d1():
 
         return
 
-    if time_exceeded():
-
-        print(
-            "[D1] Deadline global tercapai."
-        )
-
-        return
-
     total = len(
         documents
     )
 
+    print()
     print(
-        f"[CLOUDFLARE PUSH] "
+        "=" * 60
+    )
+
+    print(
+        "[CLOUDFLARE PUSH] "
         f"Memulai upload "
         f"{total:,} dokumen ke D1..."
+    )
+
+    print(
+        "[D1] Upload TIDAK dibatasi "
+        "oleh timer crawl."
+    )
+
+    print(
+        "=" * 60
     )
 
     success_count = 0
@@ -1714,15 +1874,6 @@ def upload_documents_to_d1():
         total,
         D1_BATCH_SIZE,
     ):
-
-        if time_exceeded():
-
-            print(
-                "[D1] Deadline global "
-                "tercapai saat upload documents."
-            )
-
-            break
 
         chunk = documents[
             start:
@@ -1752,6 +1903,12 @@ def upload_documents_to_d1():
 
         try:
 
+            # ==================================================
+            # PENTING:
+            # Tidak ada time_exceeded() di sini.
+            # Upload boleh terus sampai selesai.
+            # ==================================================
+
             d1_request(
                 batch
             )
@@ -1776,6 +1933,7 @@ def upload_documents_to_d1():
 
         except Exception as exc:
 
+            print()
             print(
                 "[D1 DOCUMENT ERROR]"
             )
@@ -1786,20 +1944,27 @@ def upload_documents_to_d1():
                 f"{total_batches} gagal:"
             )
 
-            print(exc)
+            print(
+                exc
+            )
 
             print(
                 "[D1] "
                 "Upload documents dihentikan."
             )
 
-            return
+            return False
+
+    print()
 
     print(
         "[CLOUDFLARE PUSH] "
         f"Documents berhasil diproses: "
-        f"{success_count:,}/{total:,}"
+        f"{success_count:,}/"
+        f"{total:,}"
     )
+
+    return True
 
 
 # ============================================================
@@ -1816,22 +1981,28 @@ def upload_graph_to_d1():
 
         return
 
-    if time_exceeded():
-
-        print(
-            "[D1] Deadline global tercapai."
-        )
-
-        return
-
     total = len(
         graph_edges
     )
 
+    print()
     print(
-        f"[CLOUDFLARE PUSH] "
+        "=" * 60
+    )
+
+    print(
+        "[CLOUDFLARE PUSH] "
         f"Memulai upload "
         f"{total:,} graph edges..."
+    )
+
+    print(
+        "[D1] Upload TIDAK dibatasi "
+        "oleh timer crawl."
+    )
+
+    print(
+        "=" * 60
     )
 
     success_count = 0
@@ -1847,15 +2018,6 @@ def upload_graph_to_d1():
         total,
         D1_BATCH_SIZE,
     ):
-
-        if time_exceeded():
-
-            print(
-                "[D1] Deadline global "
-                "tercapai saat upload graph."
-            )
-
-            break
 
         chunk = graph_edges[
             start:
@@ -1877,6 +2039,10 @@ def upload_graph_to_d1():
             )
 
         try:
+
+            # ==================================================
+            # Tidak ada global crawl deadline di sini.
+            # ==================================================
 
             d1_request(
                 batch
@@ -1902,6 +2068,7 @@ def upload_graph_to_d1():
 
         except Exception as exc:
 
+            print()
             print(
                 "[D1 GRAPH ERROR]"
             )
@@ -1912,20 +2079,27 @@ def upload_graph_to_d1():
                 f"{total_batches} gagal:"
             )
 
-            print(exc)
+            print(
+                exc
+            )
 
             print(
                 "[D1] "
                 "Upload graph dihentikan."
             )
 
-            return
+            return False
+
+    print()
 
     print(
         "[CLOUDFLARE PUSH] "
         f"Graph berhasil diproses: "
-        f"{success_count:,}/{total:,}"
+        f"{success_count:,}/"
+        f"{total:,}"
     )
+
+    return True
 
 
 # ============================================================
@@ -1990,37 +2164,46 @@ SEEDS = [
 
 def main():
 
-    global START_TIME
-
-    START_TIME = time.monotonic()
+    global CRAWL_START_TIME
 
     print("=" * 60)
     print("DEEVV SEARCH CRAWLER")
     print("=" * 60)
 
     print(
-        f"MAX TOTAL RUN : "
-        f"{MAX_RUN_SECONDS}s"
+        f"MAX CRAWL        : "
+        f"{CRAWL_MAX_SECONDS}s "
+        f"(1 jam)"
     )
 
     print(
-        f"MAX CRAWL     : "
-        f"{CRAWL_MAX_SECONDS}s"
+        f"MAX PAGE/DOMAIN  : "
+        f"{MAX_PAGES_PER_DOMAIN}"
     )
 
     print(
-        f"UPLOAD RESERVE: "
-        f"{CRAWL_RESERVE_SECONDS}s"
-    )
-
-    print(
-        f"CONCURRENCY   : "
+        f"CONCURRENCY      : "
         f"{CONCURRENCY}"
     )
 
     print(
-        f"D1 BATCH      : "
+        f"D1 BATCH         : "
         f"{D1_BATCH_SIZE}"
+    )
+
+    print(
+        f"D1 TIMEOUT       : "
+        f"{D1_REQUEST_TIMEOUT}s/request"
+    )
+
+    print(
+        f"D1 RETRY         : "
+        f"{D1_RETRY_COUNT}x"
+    )
+
+    print(
+        "D1 UPLOAD LIMIT   : "
+        "TIDAK ADA"
     )
 
     print("=" * 60)
@@ -2049,6 +2232,7 @@ def main():
         )
 
         for key in missing:
+
             print(
                 f" - {key}"
             )
@@ -2058,19 +2242,66 @@ def main():
     # ========================================================
     # GET EXISTING URLS
     # ========================================================
+    #
+    # Proses ini TIDAK dihitung ke 1 jam crawl.
+    #
 
     existing_urls = (
         get_already_visited_urls_d1()
     )
 
-    if time_exceeded():
+    # ========================================================
+    # RESET GLOBAL CRAWL STATE
+    # ========================================================
 
-        print(
-            "[FATAL] Deadline tercapai "
-            "setelah membaca D1."
-        )
+    visited_urls.clear()
+    queued_urls.clear()
+    domain_page_count.clear()
+    robots_cache.clear()
 
-        return
+    documents.clear()
+    graph_edges.clear()
+
+    stats.update(
+        {
+            "crawled": 0,
+            "saved": 0,
+            "skipped": 0,
+            "errors": 0,
+            "graph": 0,
+        }
+    )
+
+    # ========================================================
+    # START CRAWL TIMER
+    # ========================================================
+    #
+    # TIMER BARU DIMULAI DI SINI.
+    #
+
+    CRAWL_START_TIME = (
+        time.monotonic()
+    )
+
+    print()
+    print(
+        "=" * 60
+    )
+
+    print(
+        "[CRAWLER] "
+        "Timer crawl dimulai."
+    )
+
+    print(
+        f"[CRAWLER] "
+        "Batas: "
+        f"{CRAWL_MAX_SECONDS}s"
+    )
+
+    print(
+        "=" * 60
+    )
 
     # ========================================================
     # CRAWL
@@ -2093,7 +2324,8 @@ def main():
     except KeyboardInterrupt:
 
         print(
-            "[CRAWLER] Dihentikan manual."
+            "[CRAWLER] "
+            "Dihentikan manual."
         )
 
     except Exception as exc:
@@ -2103,7 +2335,13 @@ def main():
             f"{exc}"
         )
 
-        return
+        # Tetap lanjut ke upload data
+        # yang sudah berhasil dikumpulkan.
+        print(
+            "[CRAWLER] "
+            "Data yang sudah terkumpul "
+            "tetap akan di-upload."
+        )
 
     # ========================================================
     # SUMMARY
@@ -2135,13 +2373,8 @@ def main():
     )
 
     print(
-        f"Elapsed   : "
-        f"{elapsed_seconds()}s"
-    )
-
-    print(
-        f"Remaining : "
-        f"{int(remaining_seconds())}s"
+        f"Crawl time: "
+        f"{crawl_elapsed_seconds()}s"
     )
 
     print("=" * 60)
@@ -2149,40 +2382,54 @@ def main():
     # ========================================================
     # UPLOAD DOCUMENTS
     # ========================================================
+    #
+    # PENTING:
+    # Tidak peduli timer crawl sudah habis atau belum.
+    #
+    # Upload tetap dijalankan.
+    #
 
     if documents:
 
-        if time_exceeded():
+        print()
+        print(
+            "[MAIN] "
+            "Memulai upload documents..."
+        )
 
-            print(
-                "[D1] "
-                "Tidak upload documents "
-                "karena deadline global "
-                "sudah tercapai."
-            )
+        upload_documents_to_d1()
 
-        else:
+    else:
 
-            upload_documents_to_d1()
+        print(
+            "[MAIN] "
+            "Tidak ada documents untuk di-upload."
+        )
 
     # ========================================================
     # UPLOAD GRAPH
     # ========================================================
+    #
+    # PENTING:
+    # Sama sekali tidak dibatasi timer crawl.
+    #
 
     if graph_edges:
 
-        if time_exceeded():
+        print()
+        print(
+            "[MAIN] "
+            "Memulai upload graph..."
+        )
 
-            print(
-                "[D1] "
-                "Tidak upload graph "
-                "karena deadline global "
-                "sudah tercapai."
-            )
+        upload_graph_to_d1()
 
-        else:
+    else:
 
-            upload_graph_to_d1()
+        print(
+            "[MAIN] "
+            "Tidak ada graph untuk di-upload."
+        )
 
     # ========================================================
     # FINAL
@@ -2194,8 +2441,8 @@ def main():
     print("=" * 60)
 
     print(
-        f"Total runtime : "
-        f"{elapsed_seconds()}s"
+        f"Crawl time    : "
+        f"{crawl_elapsed_seconds()}s"
     )
 
     print(
@@ -2208,19 +2455,27 @@ def main():
         f"{len(graph_edges):,}"
     )
 
-    if elapsed_seconds() >= MAX_RUN_SECONDS:
+    if (
+        crawl_elapsed_seconds()
+        >= CRAWL_MAX_SECONDS
+    ):
 
         print(
-            "Status        : "
+            "Crawl status  : "
             "TIME LIMIT REACHED"
         )
 
     else:
 
         print(
-            "Status        : "
+            "Crawl status  : "
             "COMPLETED"
         )
+
+    print(
+        "Upload status : "
+        "NOT TIME LIMITED"
+    )
 
     print("=" * 60)
 
