@@ -20,11 +20,6 @@ from bs4 import BeautifulSoup
 # CRAWL TIME
 # ============================================================
 
-# Maksimal waktu CRAWLING.
-#
-# PENTING:
-# Timer ini hanya berlaku untuk proses crawling.
-# Upload D1 TIDAK dibatasi oleh timer ini.
 CRAWL_MAX_SECONDS = 3600
 
 
@@ -37,7 +32,6 @@ CONCURRENCY = 15
 MAX_URL_LENGTH = 200
 MAX_PATH_DEPTH = 6
 
-# Dinaikkan dari 40 -> 100 halaman per domain.
 MAX_PAGES_PER_DOMAIN = 100
 
 
@@ -45,22 +39,17 @@ MAX_PAGES_PER_DOMAIN = 100
 # D1
 # ============================================================
 
-# Jumlah statement dalam satu request REST D1.
+# 50 graph rows = 100 bound parameters.
+#
+# D1 maximum bound parameters per query = 100.
+#
+# Jangan dinaikkan menjadi 100/500 untuk GRAPH.
 D1_BATCH_SIZE = 50
 
-# Timeout per request D1.
-#
-# Ini BUKAN global timeout.
-# Setiap request boleh berjalan sampai batas ini.
-#
-# 40 detik dibuat agak longgar supaya tidak terlalu sensitif
-# terhadap koneksi lambat.
 D1_REQUEST_TIMEOUT = 40
 
-# Jumlah maksimum percobaan.
 D1_RETRY_COUNT = 5
 
-# Jeda antar retry.
 D1_RETRY_BACKOFF = [
     3,
     6,
@@ -96,12 +85,7 @@ CF_API_TOKEN = os.getenv("CF_API_TOKEN")
 # GLOBAL STATE
 # ============================================================
 
-# Timer crawling.
-#
-# TIDAK langsung dimulai ketika program start.
-# Akan di-reset tepat sebelum crawling dimulai.
 CRAWL_START_TIME = None
-
 
 visited_urls = set()
 queued_urls = set()
@@ -109,7 +93,18 @@ queued_urls = set()
 domain_page_count = {}
 
 documents = []
-graph_edges = []
+
+# ------------------------------------------------------------
+# PENTING:
+#
+# Kita TIDAK langsung menyimpan graph_edges.
+#
+# Untuk sementara kita simpan outgoing links per document.
+# Setelah crawl selesai, baru kita filter target yang benar-benar
+# ada di index.
+# ------------------------------------------------------------
+
+page_links = {}
 
 robots_cache = {}
 
@@ -119,8 +114,23 @@ stats = {
     "saved": 0,
     "skipped": 0,
     "errors": 0,
+
+    # Link mentah yang ditemukan.
+    "links_found": 0,
+
+    # Edge setelah filtering.
     "graph": 0,
+
+    # Link yang dibuang karena target tidak ada di index.
+    "graph_filtered": 0,
 }
+
+
+# ============================================================
+# FINAL GRAPH
+# ============================================================
+
+graph_edges = []
 
 
 # ============================================================
@@ -128,9 +138,6 @@ stats = {
 # ============================================================
 
 def crawl_elapsed_seconds():
-    """
-    Mengembalikan waktu yang sudah digunakan khusus crawling.
-    """
 
     if CRAWL_START_TIME is None:
         return 0
@@ -142,9 +149,6 @@ def crawl_elapsed_seconds():
 
 
 def crawl_remaining_seconds():
-    """
-    Sisa waktu crawling.
-    """
 
     if CRAWL_START_TIME is None:
         return CRAWL_MAX_SECONDS
@@ -160,6 +164,7 @@ def crawl_remaining_seconds():
 
 
 def crawl_time_exceeded():
+
     return crawl_remaining_seconds() <= 0
 
 
@@ -179,10 +184,6 @@ def get_d1_api_url():
 def is_retryable_http_status(
     status_code,
 ):
-    """
-    Hanya error yang kemungkinan sementara
-    yang boleh di-retry.
-    """
 
     return status_code in {
         408,
@@ -197,12 +198,6 @@ def is_retryable_http_status(
 def get_retry_sleep(
     attempt,
 ):
-    """
-    attempt:
-      1 = retry pertama
-      2 = retry kedua
-      dst.
-    """
 
     index = min(
         attempt - 1,
@@ -213,16 +208,6 @@ def get_retry_sleep(
 
 
 def d1_request(batch):
-    """
-    Kirim batch SQL ke Cloudflare D1.
-
-    PENTING:
-    - Tidak terikat timer crawling.
-    - Tidak menggunakan crawl_remaining_seconds().
-    - Timeout berlaku per HTTP request.
-    - Timeout/network/429/5xx akan di-retry.
-    - Error SQL 400 tidak akan diulang berkali-kali.
-    """
 
     if not CF_ACCOUNT_ID:
         raise RuntimeError(
@@ -299,10 +284,6 @@ def d1_request(batch):
                     f"{data}"
                 )
 
-                # ----------------------------------------------
-                # ERROR PERMANEN
-                # ----------------------------------------------
-
                 if not is_retryable_http_status(
                     response.status_code
                 ):
@@ -313,20 +294,9 @@ def d1_request(batch):
                         f"{response.status_code}"
                     )
 
-                    print(
-                        "[D1] "
-                        "Error tidak dianggap "
-                        "retryable. "
-                        "Request dihentikan."
-                    )
-
                     raise RuntimeError(
                         last_error
                     )
-
-                # ----------------------------------------------
-                # ERROR SEMENTARA
-                # ----------------------------------------------
 
                 print(
                     f"[D1 RETRY] "
@@ -349,7 +319,7 @@ def d1_request(batch):
                         f"[D1] "
                         f"Menunggu "
                         f"{sleep_time}s "
-                        f"sebelum retry..."
+                        "sebelum retry..."
                     )
 
                     time.sleep(
@@ -384,34 +354,12 @@ def d1_request(batch):
                     f"{last_error}"
                 )
 
-                # ----------------------------------------------
-                # JANGAN RETRY SQL ERROR
-                # ----------------------------------------------
-                #
-                # Contoh:
-                #
-                # SQLITE_ERROR
-                # SQLITE_CORRUPT
-                # SQLITE_CONSTRAINT
-                #
-                # Retry batch yang sama tidak memperbaiki
-                # SQL/database yang memang rusak.
-                #
-
                 raise RuntimeError(
                     "D1 SQL error: "
                     f"{last_error}"
                 )
 
-            # ==================================================
-            # SUCCESS
-            # ==================================================
-
             return data
-
-        # ======================================================
-        # REQUEST TIMEOUT
-        # ======================================================
 
         except requests.Timeout as exc:
 
@@ -444,10 +392,6 @@ def d1_request(batch):
                     sleep_time
                 )
 
-        # ======================================================
-        # NETWORK ERROR
-        # ======================================================
-
         except requests.RequestException as exc:
 
             last_error = str(exc)
@@ -478,13 +422,8 @@ def d1_request(batch):
                     sleep_time
                 )
 
-        # ======================================================
-        # RuntimeError
-        # ======================================================
-
         except RuntimeError:
 
-            # Error SQL/permanent langsung diteruskan.
             raise
 
     raise RuntimeError(
@@ -542,7 +481,14 @@ def get_already_visited_urls_d1():
                 )
 
                 if url:
-                    urls.add(url)
+                    normalized = normalize_url(
+                        url
+                    )
+
+                    if normalized:
+                        urls.add(
+                            normalized
+                        )
 
         print(
             f"[D1] {len(urls):,} URL "
@@ -836,8 +782,6 @@ async def can_fetch_robots(
 
     except Exception:
 
-        # Kalau robots gagal diambil,
-        # jangan biarkan crawler menggantung.
         robots_cache[
             domain
         ] = True
@@ -1378,7 +1322,6 @@ class ProfessionalSearchCrawler:
         if count >= MAX_PAGES_PER_DOMAIN:
             return
 
-        # Robots async + timeout.
         allowed = await can_fetch_robots(
             self.session,
             normalized,
@@ -1568,7 +1511,7 @@ class ProfessionalSearchCrawler:
                 stats["crawled"] += 1
 
                 # ==================================================
-                # OUTGOING GRAPH
+                # OUTGOING LINKS
                 # ==================================================
 
                 links = extract_links(
@@ -1576,16 +1519,20 @@ class ProfessionalSearchCrawler:
                     final_url,
                 )
 
-                for target_url in links:
+                stats["links_found"] += len(
+                    links
+                )
 
-                    graph_edges.append(
-                        {
-                            "source_url": final_url,
-                            "target_url": target_url,
-                        }
-                    )
+                # --------------------------------------------------
+                # JANGAN MASUKKAN LANGSUNG KE graph_edges.
+                #
+                # Simpan sementara per source.
+                # Nanti difilter setelah crawl selesai.
+                # --------------------------------------------------
 
-                    stats["graph"] += 1
+                page_links[
+                    final_url
+                ] = links
 
                 # ==================================================
                 # QUEUE NEW URLS
@@ -1635,8 +1582,8 @@ class ProfessionalSearchCrawler:
                         f"{stats['crawled']:,} "
                         f"queued="
                         f"{self.queue.qsize():,} "
-                        f"graph="
-                        f"{stats['graph']:,} "
+                        f"links="
+                        f"{stats['links_found']:,} "
                         f"time="
                         f"{crawl_elapsed_seconds()}s "
                         f"remaining="
@@ -1701,10 +1648,6 @@ class ProfessionalSearchCrawler:
                 )
             ]
 
-            # ====================================================
-            # HARD CRAWL TIMEOUT
-            # ====================================================
-
             remaining = (
                 crawl_remaining_seconds()
             )
@@ -1748,10 +1691,6 @@ class ProfessionalSearchCrawler:
 
         finally:
 
-            # ====================================================
-            # CANCEL WORKERS
-            # ====================================================
-
             for worker in workers:
 
                 if not worker.done():
@@ -1764,19 +1703,148 @@ class ProfessionalSearchCrawler:
                     return_exceptions=True,
                 )
 
-            # ====================================================
-            # CLOSE SESSION
-            # ====================================================
-
             if self.session:
 
                 await self.session.close()
 
-            # ====================================================
-            # CLEAN QUEUE REFERENCES
-            # ====================================================
-
             queued_urls.clear()
+
+
+# ============================================================
+# BUILD FILTERED GRAPH
+# ============================================================
+
+def build_filtered_graph(
+    existing_urls,
+):
+
+    global graph_edges
+
+    print()
+    print("=" * 60)
+    print("[GRAPH] Membuat graph terfilter...")
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # Semua URL yang dianggap sebagai node valid:
+    #
+    # 1. Document yang baru berhasil dicrawl
+    # 2. Document yang sudah ada di D1
+    # --------------------------------------------------------
+
+    indexed_urls = set(
+        existing_urls
+    )
+
+    for document in documents:
+
+        url = normalize_url(
+            document["url"]
+        )
+
+        if url:
+            indexed_urls.add(
+                url
+            )
+
+    print(
+        f"[GRAPH] Indexed nodes tersedia: "
+        f"{len(indexed_urls):,}"
+    )
+
+    raw_links = stats[
+        "links_found"
+    ]
+
+    filtered_count = 0
+
+    unique_edges = set()
+
+    # --------------------------------------------------------
+    # Filter:
+    #
+    # source harus merupakan document
+    # target harus merupakan document
+    #
+    # Duplicate edge otomatis dibuang.
+    # --------------------------------------------------------
+
+    for source_url, links in page_links.items():
+
+        normalized_source = normalize_url(
+            source_url
+        )
+
+        if not normalized_source:
+            continue
+
+        if normalized_source not in indexed_urls:
+            continue
+
+        for target_url in links:
+
+            normalized_target = normalize_url(
+                target_url
+            )
+
+            if not normalized_target:
+                continue
+
+            if normalized_target not in indexed_urls:
+
+                filtered_count += 1
+
+                continue
+
+            unique_edges.add(
+                (
+                    normalized_source,
+                    normalized_target,
+                )
+            )
+
+    # --------------------------------------------------------
+    # Convert ke list.
+    # --------------------------------------------------------
+
+    graph_edges = [
+        {
+            "source_url": source,
+            "target_url": target,
+        }
+        for source, target
+        in unique_edges
+    ]
+
+    stats["graph"] = len(
+        graph_edges
+    )
+
+    stats["graph_filtered"] = (
+        filtered_count
+    )
+
+    print(
+        f"[GRAPH] Raw links     : "
+        f"{raw_links:,}"
+    )
+
+    print(
+        f"[GRAPH] Filtered out  : "
+        f"{filtered_count:,}"
+    )
+
+    print(
+        f"[GRAPH] Final edges   : "
+        f"{len(graph_edges):,}"
+    )
+
+    print(
+        f"[GRAPH] Dihapus karena "
+        "target bukan document/index."
+    )
+
+    print("=" * 60)
 
 
 # ============================================================
@@ -1835,16 +1903,14 @@ def upload_documents_to_d1():
             "[D1] Tidak ada document baru."
         )
 
-        return
+        return True
 
     total = len(
         documents
     )
 
     print()
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
 
     print(
         "[CLOUDFLARE PUSH] "
@@ -1857,9 +1923,7 @@ def upload_documents_to_d1():
         "oleh timer crawl."
     )
 
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
 
     success_count = 0
 
@@ -1902,12 +1966,6 @@ def upload_documents_to_d1():
             )
 
         try:
-
-            # ==================================================
-            # PENTING:
-            # Tidak ada time_exceeded() di sini.
-            # Upload boleh terus sampai selesai.
-            # ==================================================
 
             d1_request(
                 batch
@@ -1976,19 +2034,18 @@ def upload_graph_to_d1():
     if not graph_edges:
 
         print(
-            "[D1] Tidak ada graph edge baru."
+            "[D1] Tidak ada graph edge "
+            "setelah filtering."
         )
 
-        return
+        return True
 
     total = len(
         graph_edges
     )
 
     print()
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
 
     print(
         "[CLOUDFLARE PUSH] "
@@ -2001,9 +2058,7 @@ def upload_graph_to_d1():
         "oleh timer crawl."
     )
 
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
 
     success_count = 0
 
@@ -2039,10 +2094,6 @@ def upload_graph_to_d1():
             )
 
         try:
-
-            # ==================================================
-            # Tidak ada global crawl deadline di sini.
-            # ==================================================
 
             d1_request(
                 batch
@@ -2173,7 +2224,7 @@ def main():
     print(
         f"MAX CRAWL        : "
         f"{CRAWL_MAX_SECONDS}s "
-        f"(1 jam)"
+        "(1 jam)"
     )
 
     print(
@@ -2202,7 +2253,7 @@ def main():
     )
 
     print(
-        "D1 UPLOAD LIMIT   : "
+        "D1 UPLOAD LIMIT  : "
         "TIDAK ADA"
     )
 
@@ -2242,16 +2293,13 @@ def main():
     # ========================================================
     # GET EXISTING URLS
     # ========================================================
-    #
-    # Proses ini TIDAK dihitung ke 1 jam crawl.
-    #
 
     existing_urls = (
         get_already_visited_urls_d1()
     )
 
     # ========================================================
-    # RESET GLOBAL CRAWL STATE
+    # RESET STATE
     # ========================================================
 
     visited_urls.clear()
@@ -2260,6 +2308,9 @@ def main():
     robots_cache.clear()
 
     documents.clear()
+
+    page_links.clear()
+
     graph_edges.clear()
 
     stats.update(
@@ -2268,25 +2319,22 @@ def main():
             "saved": 0,
             "skipped": 0,
             "errors": 0,
+            "links_found": 0,
             "graph": 0,
+            "graph_filtered": 0,
         }
     )
 
     # ========================================================
     # START CRAWL TIMER
     # ========================================================
-    #
-    # TIMER BARU DIMULAI DI SINI.
-    #
 
     CRAWL_START_TIME = (
         time.monotonic()
     )
 
     print()
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
 
     print(
         "[CRAWLER] "
@@ -2299,9 +2347,7 @@ def main():
         f"{CRAWL_MAX_SECONDS}s"
     )
 
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
 
     # ========================================================
     # CRAWL
@@ -2335,8 +2381,6 @@ def main():
             f"{exc}"
         )
 
-        # Tetap lanjut ke upload data
-        # yang sudah berhasil dikumpulkan.
         print(
             "[CRAWLER] "
             "Data yang sudah terkumpul "
@@ -2344,7 +2388,7 @@ def main():
         )
 
     # ========================================================
-    # SUMMARY
+    # SUMMARY CRAWL
     # ========================================================
 
     print()
@@ -2353,41 +2397,59 @@ def main():
     print("=" * 60)
 
     print(
-        f"Documents : "
+        f"Documents       : "
         f"{len(documents):,}"
     )
 
     print(
-        f"Graph     : "
-        f"{len(graph_edges):,}"
+        f"Raw links       : "
+        f"{stats['links_found']:,}"
     )
 
     print(
-        f"Crawled   : "
+        f"Crawled         : "
         f"{stats['crawled']:,}"
     )
 
     print(
-        f"Errors    : "
+        f"Errors          : "
         f"{stats['errors']:,}"
     )
 
     print(
-        f"Crawl time: "
+        f"Crawl time      : "
         f"{crawl_elapsed_seconds()}s"
     )
 
     print("=" * 60)
 
     # ========================================================
-    # UPLOAD DOCUMENTS
+    # BUILD GRAPH
     # ========================================================
     #
-    # PENTING:
-    # Tidak peduli timer crawl sudah habis atau belum.
+    # Ini dilakukan SETELAH crawl.
     #
-    # Upload tetap dijalankan.
+    # Jadi kita sekarang tahu mana URL yang benar-benar
+    # merupakan document/index.
     #
+
+    build_filtered_graph(
+        existing_urls
+    )
+
+    print()
+    print(
+        "[MAIN] Graph siap di-upload:"
+    )
+
+    print(
+        f"[MAIN] "
+        f"{len(graph_edges):,} edges"
+    )
+
+    # ========================================================
+    # UPLOAD DOCUMENTS
+    # ========================================================
 
     if documents:
 
@@ -2397,22 +2459,23 @@ def main():
             "Memulai upload documents..."
         )
 
-        upload_documents_to_d1()
+        documents_ok = (
+            upload_documents_to_d1()
+        )
 
     else:
 
+        documents_ok = True
+
         print(
             "[MAIN] "
-            "Tidak ada documents untuk di-upload."
+            "Tidak ada documents "
+            "untuk di-upload."
         )
 
     # ========================================================
     # UPLOAD GRAPH
     # ========================================================
-    #
-    # PENTING:
-    # Sama sekali tidak dibatasi timer crawl.
-    #
 
     if graph_edges:
 
@@ -2422,13 +2485,18 @@ def main():
             "Memulai upload graph..."
         )
 
-        upload_graph_to_d1()
+        graph_ok = (
+            upload_graph_to_d1()
+        )
 
     else:
 
+        graph_ok = True
+
         print(
             "[MAIN] "
-            "Tidak ada graph untuk di-upload."
+            "Tidak ada graph "
+            "untuk di-upload."
         )
 
     # ========================================================
@@ -2441,18 +2509,38 @@ def main():
     print("=" * 60)
 
     print(
-        f"Crawl time    : "
+        f"Crawl time       : "
         f"{crawl_elapsed_seconds()}s"
     )
 
     print(
-        f"Documents     : "
+        f"Documents        : "
         f"{len(documents):,}"
     )
 
     print(
-        f"Graph edges   : "
+        f"Raw links        : "
+        f"{stats['links_found']:,}"
+    )
+
+    print(
+        f"Final graph      : "
         f"{len(graph_edges):,}"
+    )
+
+    print(
+        f"Filtered graph   : "
+        f"{stats['graph_filtered']:,}"
+    )
+
+    print(
+        f"Documents upload : "
+        f"{'OK' if documents_ok else 'FAILED'}"
+    )
+
+    print(
+        f"Graph upload     : "
+        f"{'OK' if graph_ok else 'FAILED'}"
     )
 
     if (
@@ -2461,19 +2549,19 @@ def main():
     ):
 
         print(
-            "Crawl status  : "
+            "Crawl status     : "
             "TIME LIMIT REACHED"
         )
 
     else:
 
         print(
-            "Crawl status  : "
+            "Crawl status     : "
             "COMPLETED"
         )
 
     print(
-        "Upload status : "
+        "Upload status    : "
         "NOT TIME LIMITED"
     )
 
