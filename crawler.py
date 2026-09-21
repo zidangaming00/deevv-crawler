@@ -39,14 +39,28 @@ MAX_PAGES_PER_DOMAIN = 100
 # D1
 # ============================================================
 
-# 50 graph rows = 100 bound parameters.
-#
-# D1 maximum bound parameters per query = 100.
-#
-# Jangan dinaikkan menjadi 100/500 untuk GRAPH.
-D1_BATCH_SIZE = 50
+# ------------------------------------------------------------
+# Documents lebih kecil agar error mudah diisolasi.
+# ------------------------------------------------------------
 
-D1_REQUEST_TIMEOUT = 40
+DOCUMENT_BATCH_SIZE = 10
+
+
+# ------------------------------------------------------------
+# Graph:
+#
+# 50 rows x 2 params = 100 bound parameters.
+# ------------------------------------------------------------
+
+GRAPH_BATCH_SIZE = 50
+
+
+# ------------------------------------------------------------
+# Cloudflare D1 REST API punya batas query sekitar 30 detik.
+# Gunakan sedikit di bawah batas tersebut.
+# ------------------------------------------------------------
+
+D1_REQUEST_TIMEOUT = 28
 
 D1_RETRY_COUNT = 5
 
@@ -56,6 +70,15 @@ D1_RETRY_BACKOFF = [
     10,
     15,
 ]
+
+
+# ------------------------------------------------------------
+# Pagination D1.
+#
+# Jangan mengambil seluruh documents sekaligus.
+# ------------------------------------------------------------
+
+D1_READ_PAGE_SIZE = 5000
 
 
 # ============================================================
@@ -76,9 +99,17 @@ USER_AGENT = (
 # CLOUDFLARE ENV
 # ============================================================
 
-CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID")
-CF_D1_DATABASE_ID = os.getenv("CF_D1_DATABASE_ID")
-CF_API_TOKEN = os.getenv("CF_API_TOKEN")
+CF_ACCOUNT_ID = os.getenv(
+    "CF_ACCOUNT_ID"
+)
+
+CF_D1_DATABASE_ID = os.getenv(
+    "CF_D1_DATABASE_ID"
+)
+
+CF_API_TOKEN = os.getenv(
+    "CF_API_TOKEN"
+)
 
 
 # ============================================================
@@ -94,16 +125,6 @@ domain_page_count = {}
 
 documents = []
 
-# ------------------------------------------------------------
-# PENTING:
-#
-# Kita TIDAK langsung menyimpan graph_edges.
-#
-# Untuk sementara kita simpan outgoing links per document.
-# Setelah crawl selesai, baru kita filter target yang benar-benar
-# ada di index.
-# ------------------------------------------------------------
-
 page_links = {}
 
 robots_cache = {}
@@ -115,13 +136,10 @@ stats = {
     "skipped": 0,
     "errors": 0,
 
-    # Link mentah yang ditemukan.
     "links_found": 0,
 
-    # Edge setelah filtering.
     "graph": 0,
 
-    # Link yang dibuang karena target tidak ada di index.
     "graph_filtered": 0,
 }
 
@@ -210,21 +228,25 @@ def get_retry_sleep(
 def d1_request(batch):
 
     if not CF_ACCOUNT_ID:
+
         raise RuntimeError(
             "CF_ACCOUNT_ID tidak tersedia"
         )
 
     if not CF_D1_DATABASE_ID:
+
         raise RuntimeError(
             "CF_D1_DATABASE_ID tidak tersedia"
         )
 
     if not CF_API_TOKEN:
+
         raise RuntimeError(
             "CF_API_TOKEN tidak tersedia"
         )
 
     if not batch:
+
         return None
 
     url = get_d1_api_url()
@@ -342,8 +364,14 @@ def d1_request(batch):
                     [],
                 )
 
-                last_error = str(
-                    errors
+                messages = data.get(
+                    "messages",
+                    [],
+                )
+
+                last_error = (
+                    f"errors={errors}, "
+                    f"messages={messages}"
                 )
 
                 print(
@@ -354,8 +382,15 @@ def d1_request(batch):
                     f"{last_error}"
                 )
 
+                # ----------------------------------------------
+                # SQL error bukan transient.
+                #
+                # Jangan retry 5 kali karena akan membuang
+                # waktu dan berpotensi menambah operasi D1.
+                # ----------------------------------------------
+
                 raise RuntimeError(
-                    "D1 SQL error: "
+                    "D1 SQL/API error: "
                     f"{last_error}"
                 )
 
@@ -434,7 +469,7 @@ def d1_request(batch):
 
 
 # ============================================================
-# GET EXISTING URLS
+# GET EXISTING URLS FROM D1
 # ============================================================
 
 def get_already_visited_urls_d1():
@@ -444,72 +479,147 @@ def get_already_visited_urls_d1():
         "yang sudah tersimpan..."
     )
 
-    batch = [
-        {
-            "sql": """
+    urls = set()
+
+    last_url = ""
+
+    page_number = 0
+
+    while True:
+
+        page_number += 1
+
+        # ----------------------------------------------------
+        # Keyset pagination.
+        #
+        # Tidak memakai OFFSET supaya semakin jauh tidak
+        # semakin lambat.
+        # ----------------------------------------------------
+
+        if last_url:
+
+            sql = """
                 SELECT url
                 FROM documents
-            """,
-            "params": [],
-        }
-    ]
+                WHERE url > ?
+                ORDER BY url
+                LIMIT ?
+            """
 
-    try:
+            params = [
+                last_url,
+                D1_READ_PAGE_SIZE,
+            ]
 
-        data = d1_request(
-            batch
-        )
+        else:
 
-        urls = set()
+            sql = """
+                SELECT url
+                FROM documents
+                ORDER BY url
+                LIMIT ?
+            """
+
+            params = [
+                D1_READ_PAGE_SIZE,
+            ]
+
+        batch = [
+            {
+                "sql": sql,
+                "params": params,
+            }
+        ]
+
+        try:
+
+            data = d1_request(
+                batch
+            )
+
+        except Exception as exc:
+
+            print(
+                f"[D1 READ ERROR] {exc}"
+            )
+
+            print(
+                "[D1] Crawler dihentikan "
+                "agar tidak mengulang crawl "
+                "secara tidak aman."
+            )
+
+            raise
 
         results = data.get(
             "result",
             [],
         )
 
-        for result in results:
+        if not results:
 
-            rows = result.get(
-                "results",
-                [],
+            break
+
+        rows = results[0].get(
+            "results",
+            [],
+        )
+
+        if not rows:
+
+            break
+
+        for row in rows:
+
+            url = row.get(
+                "url"
             )
 
-            for row in rows:
+            if url:
 
-                url = row.get(
-                    "url"
+                normalized = normalize_url(
+                    url
                 )
 
-                if url:
-                    normalized = normalize_url(
-                        url
+                if normalized:
+
+                    urls.add(
+                        normalized
                     )
 
-                    if normalized:
-                        urls.add(
-                            normalized
-                        )
-
         print(
-            f"[D1] {len(urls):,} URL "
-            "sudah ada."
+            f"[D1] Read page "
+            f"{page_number} | "
+            f"{len(urls):,} URL"
         )
 
-        return urls
+        if len(rows) < D1_READ_PAGE_SIZE:
 
-    except Exception as exc:
+            break
 
-        print(
-            f"[D1 READ ERROR] {exc}"
+        last_row_url = rows[-1].get(
+            "url"
         )
 
-        print(
-            "[D1] Crawler dihentikan "
-            "agar tidak mengulang crawl "
-            "secara tidak aman."
-        )
+        if not last_row_url:
 
-        raise
+            break
+
+        if last_row_url == last_url:
+
+            raise RuntimeError(
+                "Pagination D1 berhenti "
+                "karena URL terakhir tidak berubah."
+            )
+
+        last_url = last_row_url
+
+    print(
+        f"[D1] {len(urls):,} URL "
+        "sudah ada."
+    )
+
+    return urls
 
 
 # ============================================================
@@ -558,9 +668,11 @@ def normalize_url(url):
         )
 
         if len(normalized) > MAX_URL_LENGTH:
+
             return None
 
         if path != "/":
+
             return normalized.rstrip("/")
 
         return normalized
@@ -579,11 +691,13 @@ def get_domain(url):
         ).hostname
 
         if not hostname:
+
             return ""
 
         hostname = hostname.lower()
 
         if hostname.startswith("www."):
+
             hostname = hostname[4:]
 
         return hostname
@@ -617,9 +731,11 @@ def get_path_depth(url):
 def is_valid_url(url):
 
     if not url:
+
         return False
 
     if len(url) > MAX_URL_LENGTH:
+
         return False
 
     parsed = urlparse(
@@ -630,15 +746,19 @@ def is_valid_url(url):
         "http",
         "https",
     ):
+
         return False
 
     if not parsed.hostname:
+
         return False
 
     if parsed.username or parsed.password:
+
         return False
 
     if get_path_depth(url) > MAX_PATH_DEPTH:
+
         return False
 
     return True
@@ -719,12 +839,15 @@ async def can_fetch_robots(
     )
 
     if not domain:
+
         return False
 
     if domain in robots_cache:
+
         return robots_cache[domain]
 
     if crawl_time_exceeded():
+
         return False
 
     parsed = urlparse(
@@ -796,6 +919,7 @@ async def can_fetch_robots(
 def clean_text(text):
 
     if not text:
+
         return ""
 
     text = re.sub(
@@ -819,6 +943,7 @@ def extract_title(soup):
         )
 
         if title:
+
             return title[:500]
 
     og_title = soup.find(
@@ -833,6 +958,7 @@ def extract_title(soup):
         )
 
         if value:
+
             return clean_text(
                 value
             )[:500]
@@ -859,6 +985,7 @@ def extract_description(soup):
         )
 
         if content:
+
             return clean_text(
                 content
             )[:1000]
@@ -875,6 +1002,7 @@ def extract_description(soup):
         )
 
         if content:
+
             return clean_text(
                 content
             )[:1000]
@@ -889,6 +1017,7 @@ def extract_snippet(soup):
     )
 
     if description:
+
         return description[:1000]
 
     for tag in soup(
@@ -902,6 +1031,7 @@ def extract_snippet(soup):
             "header",
         ]
     ):
+
         tag.decompose()
 
     text = clean_text(
@@ -1014,6 +1144,7 @@ def extract_language(soup):
     )
 
     if not html:
+
         return ""
 
     language = html.get(
@@ -1034,12 +1165,21 @@ def extract_last_modified(
     headers,
 ):
 
+    # --------------------------------------------------------
+    # HTTP Last-Modified.
+    # --------------------------------------------------------
+
     header_value = headers.get(
         "Last-Modified"
     )
 
     if header_value:
+
         return header_value[:100]
+
+    # --------------------------------------------------------
+    # Meta modified date.
+    # --------------------------------------------------------
 
     meta_names = [
         "article:modified_time",
@@ -1072,6 +1212,7 @@ def extract_last_modified(
             )
 
             if content:
+
                 return content[:100]
 
     return ""
@@ -1098,6 +1239,7 @@ def extract_links(
         )
 
         if not href:
+
             continue
 
         href = href.strip()
@@ -1111,6 +1253,7 @@ def extract_links(
                 "data:",
             )
         ):
+
             continue
 
         absolute = urljoin(
@@ -1123,21 +1266,25 @@ def extract_links(
         )
 
         if not normalized:
+
             continue
 
         if not is_valid_url(
             normalized
         ):
+
             continue
 
         if is_spam_domain(
             normalized
         ):
+
             continue
 
         if is_spider_trap(
             normalized
         ):
+
             continue
 
         links.add(
@@ -1179,6 +1326,7 @@ async def fetch_page(
 ):
 
     if crawl_time_exceeded():
+
         return None
 
     timeout = aiohttp.ClientTimeout(
@@ -1203,6 +1351,7 @@ async def fetch_page(
         ) as response:
 
             if response.status != 200:
+
                 return None
 
             content_type = (
@@ -1219,6 +1368,7 @@ async def fetch_page(
                 "application/xhtml+xml"
                 not in content_type
             ):
+
                 return None
 
             final_url = normalize_url(
@@ -1226,6 +1376,7 @@ async def fetch_page(
             )
 
             if not final_url:
+
                 return None
 
             body = await response.text(
@@ -1233,6 +1384,7 @@ async def fetch_page(
             )
 
             if not body:
+
                 return None
 
             return {
@@ -1242,6 +1394,7 @@ async def fetch_page(
             }
 
     except Exception:
+
         return None
 
 
@@ -1275,6 +1428,7 @@ class ProfessionalSearchCrawler:
     ):
 
         if crawl_time_exceeded():
+
             return
 
         normalized = normalize_url(
@@ -1282,32 +1436,37 @@ class ProfessionalSearchCrawler:
         )
 
         if not normalized:
+
             return
 
-        if normalized in (
-            self.existing_urls
-        ):
+        if normalized in self.existing_urls:
+
             return
 
         if normalized in visited_urls:
+
             return
 
         if normalized in queued_urls:
+
             return
 
         if not is_valid_url(
             normalized
         ):
+
             return
 
         if is_spam_domain(
             normalized
         ):
+
             return
 
         if is_spider_trap(
             normalized
         ):
+
             return
 
         domain = get_domain(
@@ -1320,6 +1479,7 @@ class ProfessionalSearchCrawler:
         )
 
         if count >= MAX_PAGES_PER_DOMAIN:
+
             return
 
         allowed = await can_fetch_robots(
@@ -1328,9 +1488,11 @@ class ProfessionalSearchCrawler:
         )
 
         if not allowed:
+
             return
 
         if crawl_time_exceeded():
+
             return
 
         queued_urls.add(
@@ -1358,6 +1520,7 @@ class ProfessionalSearchCrawler:
                 )
 
                 if remaining <= 0:
+
                     return
 
                 wait_timeout = min(
@@ -1388,6 +1551,7 @@ class ProfessionalSearchCrawler:
                 )
 
                 if url in visited_urls:
+
                     continue
 
                 domain = get_domain(
@@ -1403,6 +1567,7 @@ class ProfessionalSearchCrawler:
                     count
                     >= MAX_PAGES_PER_DOMAIN
                 ):
+
                     continue
 
                 visited_urls.add(
@@ -1444,6 +1609,7 @@ class ProfessionalSearchCrawler:
                 )
 
                 if not title and not snippet:
+
                     continue
 
                 favicon = extract_favicon(
@@ -1523,13 +1689,6 @@ class ProfessionalSearchCrawler:
                     links
                 )
 
-                # --------------------------------------------------
-                # JANGAN MASUKKAN LANGSUNG KE graph_edges.
-                #
-                # Simpan sementara per source.
-                # Nanti difilter setelah crawl selesai.
-                # --------------------------------------------------
-
                 page_links[
                     final_url
                 ] = links
@@ -1543,6 +1702,7 @@ class ProfessionalSearchCrawler:
                     for target_url in links:
 
                         if crawl_time_exceeded():
+
                             break
 
                         target_domain = (
@@ -1562,6 +1722,7 @@ class ProfessionalSearchCrawler:
                             target_count
                             >= MAX_PAGES_PER_DOMAIN
                         ):
+
                             continue
 
                         await self.add_url(
@@ -1632,6 +1793,7 @@ class ProfessionalSearchCrawler:
             for seed in seeds:
 
                 if crawl_time_exceeded():
+
                     break
 
                 await self.add_url(
@@ -1669,6 +1831,7 @@ class ProfessionalSearchCrawler:
                 except asyncio.TimeoutError:
 
                     print()
+
                     print(
                         "[CRAWLER] "
                         "BATAS WAKTU CRAWL "
@@ -1694,6 +1857,7 @@ class ProfessionalSearchCrawler:
             for worker in workers:
 
                 if not worker.done():
+
                     worker.cancel()
 
             if workers:
@@ -1722,15 +1886,10 @@ def build_filtered_graph(
 
     print()
     print("=" * 60)
-    print("[GRAPH] Membuat graph terfilter...")
+    print(
+        "[GRAPH] Membuat graph terfilter..."
+    )
     print("=" * 60)
-
-    # --------------------------------------------------------
-    # Semua URL yang dianggap sebagai node valid:
-    #
-    # 1. Document yang baru berhasil dicrawl
-    # 2. Document yang sudah ada di D1
-    # --------------------------------------------------------
 
     indexed_urls = set(
         existing_urls
@@ -1743,6 +1902,7 @@ def build_filtered_graph(
         )
 
         if url:
+
             indexed_urls.add(
                 url
             )
@@ -1760,15 +1920,6 @@ def build_filtered_graph(
 
     unique_edges = set()
 
-    # --------------------------------------------------------
-    # Filter:
-    #
-    # source harus merupakan document
-    # target harus merupakan document
-    #
-    # Duplicate edge otomatis dibuang.
-    # --------------------------------------------------------
-
     for source_url, links in page_links.items():
 
         normalized_source = normalize_url(
@@ -1776,9 +1927,11 @@ def build_filtered_graph(
         )
 
         if not normalized_source:
+
             continue
 
         if normalized_source not in indexed_urls:
+
             continue
 
         for target_url in links:
@@ -1788,6 +1941,7 @@ def build_filtered_graph(
             )
 
             if not normalized_target:
+
                 continue
 
             if normalized_target not in indexed_urls:
@@ -1802,10 +1956,6 @@ def build_filtered_graph(
                     normalized_target,
                 )
             )
-
-    # --------------------------------------------------------
-    # Convert ke list.
-    # --------------------------------------------------------
 
     graph_edges = [
         {
@@ -1840,7 +1990,7 @@ def build_filtered_graph(
     )
 
     print(
-        f"[GRAPH] Dihapus karena "
+        "[GRAPH] Dihapus karena "
         "target bukan document/index."
     )
 
@@ -1919,6 +2069,11 @@ def upload_documents_to_d1():
     )
 
     print(
+        "[D1] Documents batch: "
+        f"{DOCUMENT_BATCH_SIZE}"
+    )
+
+    print(
         "[D1] Upload TIDAK dibatasi "
         "oleh timer crawl."
     )
@@ -1929,19 +2084,19 @@ def upload_documents_to_d1():
 
     total_batches = (
         total
-        + D1_BATCH_SIZE
+        + DOCUMENT_BATCH_SIZE
         - 1
-    ) // D1_BATCH_SIZE
+    ) // DOCUMENT_BATCH_SIZE
 
     for start in range(
         0,
         total,
-        D1_BATCH_SIZE,
+        DOCUMENT_BATCH_SIZE,
     ):
 
         chunk = documents[
             start:
-            start + D1_BATCH_SIZE
+            start + DOCUMENT_BATCH_SIZE
         ]
 
         batch = []
@@ -1977,7 +2132,7 @@ def upload_documents_to_d1():
 
             current_batch = (
                 start
-                // D1_BATCH_SIZE
+                // DOCUMENT_BATCH_SIZE
             ) + 1
 
             print(
@@ -1998,7 +2153,7 @@ def upload_documents_to_d1():
 
             print(
                 f"Batch "
-                f"{start // D1_BATCH_SIZE + 1}/"
+                f"{start // DOCUMENT_BATCH_SIZE + 1}/"
                 f"{total_batches} gagal:"
             )
 
@@ -2054,6 +2209,11 @@ def upload_graph_to_d1():
     )
 
     print(
+        "[D1] Graph batch: "
+        f"{GRAPH_BATCH_SIZE}"
+    )
+
+    print(
         "[D1] Upload TIDAK dibatasi "
         "oleh timer crawl."
     )
@@ -2064,19 +2224,19 @@ def upload_graph_to_d1():
 
     total_batches = (
         total
-        + D1_BATCH_SIZE
+        + GRAPH_BATCH_SIZE
         - 1
-    ) // D1_BATCH_SIZE
+    ) // GRAPH_BATCH_SIZE
 
     for start in range(
         0,
         total,
-        D1_BATCH_SIZE,
+        GRAPH_BATCH_SIZE,
     ):
 
         chunk = graph_edges[
             start:
-            start + D1_BATCH_SIZE
+            start + GRAPH_BATCH_SIZE
         ]
 
         batch = []
@@ -2105,7 +2265,7 @@ def upload_graph_to_d1():
 
             current_batch = (
                 start
-                // D1_BATCH_SIZE
+                // GRAPH_BATCH_SIZE
             ) + 1
 
             print(
@@ -2126,7 +2286,7 @@ def upload_graph_to_d1():
 
             print(
                 f"Batch "
-                f"{start // D1_BATCH_SIZE + 1}/"
+                f"{start // GRAPH_BATCH_SIZE + 1}/"
                 f"{total_batches} gagal:"
             )
 
@@ -2238,8 +2398,13 @@ def main():
     )
 
     print(
-        f"D1 BATCH         : "
-        f"{D1_BATCH_SIZE}"
+        f"DOCUMENT BATCH   : "
+        f"{DOCUMENT_BATCH_SIZE}"
+    )
+
+    print(
+        f"GRAPH BATCH      : "
+        f"{GRAPH_BATCH_SIZE}"
     )
 
     print(
@@ -2253,7 +2418,12 @@ def main():
     )
 
     print(
-        "D1 UPLOAD LIMIT  : "
+        f"D1 READ PAGE     : "
+        f"{D1_READ_PAGE_SIZE}"
+    )
+
+    print(
+        "D1 UPLOAD TIMER  : "
         "TIDAK ADA"
     )
 
@@ -2294,17 +2464,36 @@ def main():
     # GET EXISTING URLS
     # ========================================================
 
-    existing_urls = (
-        get_already_visited_urls_d1()
-    )
+    try:
+
+        existing_urls = (
+            get_already_visited_urls_d1()
+        )
+
+    except Exception as exc:
+
+        print()
+        print(
+            "[FATAL] Tidak bisa membaca "
+            "existing documents dari D1."
+        )
+
+        print(
+            exc
+        )
+
+        sys.exit(1)
 
     # ========================================================
     # RESET STATE
     # ========================================================
 
     visited_urls.clear()
+
     queued_urls.clear()
+
     domain_page_count.clear()
+
     robots_cache.clear()
 
     documents.clear()
@@ -2359,6 +2548,8 @@ def main():
         )
     )
 
+    crawler_failed = False
+
     try:
 
         asyncio.run(
@@ -2369,6 +2560,8 @@ def main():
 
     except KeyboardInterrupt:
 
+        crawler_failed = True
+
         print(
             "[CRAWLER] "
             "Dihentikan manual."
@@ -2376,15 +2569,11 @@ def main():
 
     except Exception as exc:
 
+        crawler_failed = True
+
         print(
             f"[FATAL CRAWLER ERROR] "
             f"{exc}"
-        )
-
-        print(
-            "[CRAWLER] "
-            "Data yang sudah terkumpul "
-            "tetap akan di-upload."
         )
 
     # ========================================================
@@ -2426,18 +2615,13 @@ def main():
     # ========================================================
     # BUILD GRAPH
     # ========================================================
-    #
-    # Ini dilakukan SETELAH crawl.
-    #
-    # Jadi kita sekarang tahu mana URL yang benar-benar
-    # merupakan document/index.
-    #
 
     build_filtered_graph(
         existing_urls
     )
 
     print()
+
     print(
         "[MAIN] Graph siap di-upload:"
     )
@@ -2451,7 +2635,25 @@ def main():
     # UPLOAD DOCUMENTS
     # ========================================================
 
-    if documents:
+    if crawler_failed:
+
+        print()
+        print(
+            "[MAIN] "
+            "Crawler mengalami fatal error."
+        )
+
+        print(
+            "[MAIN] "
+            "Upload documents dan graph "
+            "DIBATALKAN."
+        )
+
+        documents_ok = False
+
+        graph_ok = False
+
+    elif documents:
 
         print()
         print(
@@ -2477,7 +2679,22 @@ def main():
     # UPLOAD GRAPH
     # ========================================================
 
-    if graph_edges:
+    if not documents_ok:
+
+        graph_ok = False
+
+        print()
+        print(
+            "[MAIN] "
+            "UPLOAD DOCUMENTS GAGAL."
+        )
+
+        print(
+            "[MAIN] "
+            "Upload graph DIBATALKAN."
+        )
+
+    elif graph_edges:
 
         print()
         print(
@@ -2553,6 +2770,13 @@ def main():
             "TIME LIMIT REACHED"
         )
 
+    elif crawler_failed:
+
+        print(
+            "Crawl status     : "
+            "FAILED"
+        )
+
     else:
 
         print(
@@ -2567,6 +2791,43 @@ def main():
 
     print("=" * 60)
 
+    # ========================================================
+    # IMPORTANT:
+    #
+    # GitHub Actions harus dianggap FAILED kalau:
+    #
+    # - crawler fatal
+    # - documents upload gagal
+    # - graph upload gagal
+    #
+    # Jadi tidak ada lagi kasus log "SELESAI" tetapi sebenarnya
+    # database gagal menerima data.
+    # ========================================================
+
+    if (
+        crawler_failed
+        or not documents_ok
+        or not graph_ok
+    ):
+
+        print()
+        print(
+            "[FATAL] Workflow dianggap GAGAL."
+        )
+
+        sys.exit(1)
+
+    print()
+    print(
+        "[SUCCESS] "
+        "Crawler + upload selesai dengan sukses."
+    )
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
+
     main()
