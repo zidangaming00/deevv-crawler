@@ -39,26 +39,7 @@ MAX_PAGES_PER_DOMAIN = 100
 # D1
 # ============================================================
 
-# ------------------------------------------------------------
-# Documents lebih kecil agar error mudah diisolasi.
-# ------------------------------------------------------------
-
 DOCUMENT_BATCH_SIZE = 10
-
-
-# ------------------------------------------------------------
-# Graph:
-#
-# 50 rows x 2 params = 100 bound parameters.
-# ------------------------------------------------------------
-
-GRAPH_BATCH_SIZE = 50
-
-
-# ------------------------------------------------------------
-# Cloudflare D1 REST API punya batas query sekitar 30 detik.
-# Gunakan sedikit di bawah batas tersebut.
-# ------------------------------------------------------------
 
 D1_REQUEST_TIMEOUT = 28
 
@@ -72,11 +53,9 @@ D1_RETRY_BACKOFF = [
 ]
 
 
-# ------------------------------------------------------------
-# Pagination D1.
-#
-# Jangan mengambil seluruh documents sekaligus.
-# ------------------------------------------------------------
+# ============================================================
+# D1 PAGINATION
+# ============================================================
 
 D1_READ_PAGE_SIZE = 5000
 
@@ -125,8 +104,6 @@ domain_page_count = {}
 
 documents = []
 
-page_links = {}
-
 robots_cache = {}
 
 
@@ -135,20 +112,8 @@ stats = {
     "saved": 0,
     "skipped": 0,
     "errors": 0,
-
     "links_found": 0,
-
-    "graph": 0,
-
-    "graph_filtered": 0,
 }
-
-
-# ============================================================
-# FINAL GRAPH
-# ============================================================
-
-graph_edges = []
 
 
 # ============================================================
@@ -382,13 +347,6 @@ def d1_request(batch):
                     f"{last_error}"
                 )
 
-                # ----------------------------------------------
-                # SQL error bukan transient.
-                #
-                # Jangan retry 5 kali karena akan membuang
-                # waktu dan berpotensi menambah operasi D1.
-                # ----------------------------------------------
-
                 raise RuntimeError(
                     "D1 SQL/API error: "
                     f"{last_error}"
@@ -491,9 +449,6 @@ def get_already_visited_urls_d1():
 
         # ----------------------------------------------------
         # Keyset pagination.
-        #
-        # Tidak memakai OFFSET supaya semakin jauh tidak
-        # semakin lambat.
         # ----------------------------------------------------
 
         if last_url:
@@ -1166,7 +1121,7 @@ def extract_last_modified(
 ):
 
     # --------------------------------------------------------
-    # HTTP Last-Modified.
+    # HTTP Last-Modified
     # --------------------------------------------------------
 
     header_value = headers.get(
@@ -1178,7 +1133,7 @@ def extract_last_modified(
         return header_value[:100]
 
     # --------------------------------------------------------
-    # Meta modified date.
+    # Meta modified date
     # --------------------------------------------------------
 
     meta_names = [
@@ -1220,6 +1175,9 @@ def extract_last_modified(
 
 # ============================================================
 # LINK EXTRACTION
+#
+# Link tetap digunakan untuk DISCOVERY.
+# Link TIDAK disimpan ke D1.
 # ============================================================
 
 def extract_links(
@@ -1678,6 +1636,9 @@ class ProfessionalSearchCrawler:
 
                 # ==================================================
                 # OUTGOING LINKS
+                #
+                # Hanya untuk discovery.
+                # Tidak disimpan ke database.
                 # ==================================================
 
                 links = extract_links(
@@ -1688,10 +1649,6 @@ class ProfessionalSearchCrawler:
                 stats["links_found"] += len(
                     links
                 )
-
-                page_links[
-                    final_url
-                ] = links
 
                 # ==================================================
                 # QUEUE NEW URLS
@@ -1875,129 +1832,6 @@ class ProfessionalSearchCrawler:
 
 
 # ============================================================
-# BUILD FILTERED GRAPH
-# ============================================================
-
-def build_filtered_graph(
-    existing_urls,
-):
-
-    global graph_edges
-
-    print()
-    print("=" * 60)
-    print(
-        "[GRAPH] Membuat graph terfilter..."
-    )
-    print("=" * 60)
-
-    indexed_urls = set(
-        existing_urls
-    )
-
-    for document in documents:
-
-        url = normalize_url(
-            document["url"]
-        )
-
-        if url:
-
-            indexed_urls.add(
-                url
-            )
-
-    print(
-        f"[GRAPH] Indexed nodes tersedia: "
-        f"{len(indexed_urls):,}"
-    )
-
-    raw_links = stats[
-        "links_found"
-    ]
-
-    filtered_count = 0
-
-    unique_edges = set()
-
-    for source_url, links in page_links.items():
-
-        normalized_source = normalize_url(
-            source_url
-        )
-
-        if not normalized_source:
-
-            continue
-
-        if normalized_source not in indexed_urls:
-
-            continue
-
-        for target_url in links:
-
-            normalized_target = normalize_url(
-                target_url
-            )
-
-            if not normalized_target:
-
-                continue
-
-            if normalized_target not in indexed_urls:
-
-                filtered_count += 1
-
-                continue
-
-            unique_edges.add(
-                (
-                    normalized_source,
-                    normalized_target,
-                )
-            )
-
-    graph_edges = [
-        {
-            "source_url": source,
-            "target_url": target,
-        }
-        for source, target
-        in unique_edges
-    ]
-
-    stats["graph"] = len(
-        graph_edges
-    )
-
-    stats["graph_filtered"] = (
-        filtered_count
-    )
-
-    print(
-        f"[GRAPH] Raw links     : "
-        f"{raw_links:,}"
-    )
-
-    print(
-        f"[GRAPH] Filtered out  : "
-        f"{filtered_count:,}"
-    )
-
-    print(
-        f"[GRAPH] Final edges   : "
-        f"{len(graph_edges):,}"
-    )
-
-    print(
-        "[GRAPH] Dihapus karena "
-        "target bukan document/index."
-    )
-
-    print("=" * 60)
-
-
-# ============================================================
 # D1 DOCUMENT SQL
 # ============================================================
 
@@ -2020,29 +1854,39 @@ ON CONFLICT(url) DO UPDATE SET
     snippet = excluded.snippet,
     favicon = excluded.favicon,
     thumbnail = excluded.thumbnail,
+    language = excluded.language,
     last_modified = excluded.last_modified,
-    content_hash = excluded.content_hash,
-    language = excluded.language
+    content_hash = excluded.content_hash
 """
 
 
 # ============================================================
-# D1 GRAPH SQL
+# D1 FTS SQL
 # ============================================================
 
-GRAPH_SQL = """
-INSERT INTO page_graph (
-    source_url,
-    target_url
+# ------------------------------------------------------------
+# Karena documents_fts tidak punya UNIQUE constraint pada URL,
+# entry lama harus dihapus dulu sebelum memasukkan versi baru.
+# ------------------------------------------------------------
+
+FTS_DELETE_SQL = """
+DELETE FROM documents_fts
+WHERE url = ?
+"""
+
+
+FTS_INSERT_SQL = """
+INSERT INTO documents_fts (
+    url,
+    title,
+    snippet
 )
-VALUES (?, ?)
-ON CONFLICT(source_url, target_url)
-DO NOTHING
+VALUES (?, ?, ?)
 """
 
 
 # ============================================================
-# D1 UPLOAD DOCUMENTS
+# D1 UPLOAD DOCUMENTS + FTS
 # ============================================================
 
 def upload_documents_to_d1():
@@ -2065,12 +1909,20 @@ def upload_documents_to_d1():
     print(
         "[CLOUDFLARE PUSH] "
         f"Memulai upload "
-        f"{total:,} dokumen ke D1..."
+        f"{total:,} dokumen..."
     )
 
     print(
         "[D1] Documents batch: "
         f"{DOCUMENT_BATCH_SIZE}"
+    )
+
+    print(
+        "[D1] FTS: AKTIF"
+    )
+
+    print(
+        "[D1] page_graph: NONAKTIF"
     )
 
     print(
@@ -2103,6 +1955,10 @@ def upload_documents_to_d1():
 
         for doc in chunk:
 
+            # ------------------------------------------------
+            # 1. Update/insert documents
+            # ------------------------------------------------
+
             batch.append(
                 {
                     "sql": DOCUMENT_SQL,
@@ -2116,6 +1972,36 @@ def upload_documents_to_d1():
                         doc["last_modified"],
                         doc["content_hash"],
                         doc["language"],
+                    ],
+                }
+            )
+
+            # ------------------------------------------------
+            # 2. Hapus entry FTS lama.
+            #
+            # Untuk URL baru hasilnya 0 row, itu normal.
+            # ------------------------------------------------
+
+            batch.append(
+                {
+                    "sql": FTS_DELETE_SQL,
+                    "params": [
+                        doc["url"],
+                    ],
+                }
+            )
+
+            # ------------------------------------------------
+            # 3. Masukkan versi terbaru ke FTS.
+            # ------------------------------------------------
+
+            batch.append(
+                {
+                    "sql": FTS_INSERT_SQL,
+                    "params": [
+                        doc["url"],
+                        doc["title"],
+                        doc["snippet"],
                     ],
                 }
             )
@@ -2136,7 +2022,7 @@ def upload_documents_to_d1():
             ) + 1
 
             print(
-                "[D1 DOCUMENTS] "
+                "[D1 DOCUMENTS + FTS] "
                 f"Batch "
                 f"{current_batch}/"
                 f"{total_batches} | "
@@ -2148,7 +2034,7 @@ def upload_documents_to_d1():
 
             print()
             print(
-                "[D1 DOCUMENT ERROR]"
+                "[D1 DOCUMENT/FTS ERROR]"
             )
 
             print(
@@ -2163,7 +2049,8 @@ def upload_documents_to_d1():
 
             print(
                 "[D1] "
-                "Upload documents dihentikan."
+                "Upload documents + FTS "
+                "dihentikan."
             )
 
             return False
@@ -2172,140 +2059,7 @@ def upload_documents_to_d1():
 
     print(
         "[CLOUDFLARE PUSH] "
-        f"Documents berhasil diproses: "
-        f"{success_count:,}/"
-        f"{total:,}"
-    )
-
-    return True
-
-
-# ============================================================
-# D1 UPLOAD GRAPH
-# ============================================================
-
-def upload_graph_to_d1():
-
-    if not graph_edges:
-
-        print(
-            "[D1] Tidak ada graph edge "
-            "setelah filtering."
-        )
-
-        return True
-
-    total = len(
-        graph_edges
-    )
-
-    print()
-    print("=" * 60)
-
-    print(
-        "[CLOUDFLARE PUSH] "
-        f"Memulai upload "
-        f"{total:,} graph edges..."
-    )
-
-    print(
-        "[D1] Graph batch: "
-        f"{GRAPH_BATCH_SIZE}"
-    )
-
-    print(
-        "[D1] Upload TIDAK dibatasi "
-        "oleh timer crawl."
-    )
-
-    print("=" * 60)
-
-    success_count = 0
-
-    total_batches = (
-        total
-        + GRAPH_BATCH_SIZE
-        - 1
-    ) // GRAPH_BATCH_SIZE
-
-    for start in range(
-        0,
-        total,
-        GRAPH_BATCH_SIZE,
-    ):
-
-        chunk = graph_edges[
-            start:
-            start + GRAPH_BATCH_SIZE
-        ]
-
-        batch = []
-
-        for edge in chunk:
-
-            batch.append(
-                {
-                    "sql": GRAPH_SQL,
-                    "params": [
-                        edge["source_url"],
-                        edge["target_url"],
-                    ],
-                }
-            )
-
-        try:
-
-            d1_request(
-                batch
-            )
-
-            success_count += len(
-                chunk
-            )
-
-            current_batch = (
-                start
-                // GRAPH_BATCH_SIZE
-            ) + 1
-
-            print(
-                "[D1 GRAPH] "
-                f"Batch "
-                f"{current_batch}/"
-                f"{total_batches} | "
-                f"{success_count:,}/"
-                f"{total:,}"
-            )
-
-        except Exception as exc:
-
-            print()
-            print(
-                "[D1 GRAPH ERROR]"
-            )
-
-            print(
-                f"Batch "
-                f"{start // GRAPH_BATCH_SIZE + 1}/"
-                f"{total_batches} gagal:"
-            )
-
-            print(
-                exc
-            )
-
-            print(
-                "[D1] "
-                "Upload graph dihentikan."
-            )
-
-            return False
-
-    print()
-
-    print(
-        "[CLOUDFLARE PUSH] "
-        f"Graph berhasil diproses: "
+        f"Documents + FTS berhasil: "
         f"{success_count:,}/"
         f"{total:,}"
     )
@@ -2403,11 +2157,6 @@ def main():
     )
 
     print(
-        f"GRAPH BATCH      : "
-        f"{GRAPH_BATCH_SIZE}"
-    )
-
-    print(
         f"D1 TIMEOUT       : "
         f"{D1_REQUEST_TIMEOUT}s/request"
     )
@@ -2420,6 +2169,18 @@ def main():
     print(
         f"D1 READ PAGE     : "
         f"{D1_READ_PAGE_SIZE}"
+    )
+
+    print(
+        "FTS              : AKTIF"
+    )
+
+    print(
+        "PAGE GRAPH       : NONAKTIF"
+    )
+
+    print(
+        "PAGERANK         : NONAKTIF"
     )
 
     print(
@@ -2498,10 +2259,6 @@ def main():
 
     documents.clear()
 
-    page_links.clear()
-
-    graph_edges.clear()
-
     stats.update(
         {
             "crawled": 0,
@@ -2509,8 +2266,6 @@ def main():
             "skipped": 0,
             "errors": 0,
             "links_found": 0,
-            "graph": 0,
-            "graph_filtered": 0,
         }
     )
 
@@ -2591,7 +2346,7 @@ def main():
     )
 
     print(
-        f"Raw links       : "
+        f"Links discovered: "
         f"{stats['links_found']:,}"
     )
 
@@ -2613,26 +2368,7 @@ def main():
     print("=" * 60)
 
     # ========================================================
-    # BUILD GRAPH
-    # ========================================================
-
-    build_filtered_graph(
-        existing_urls
-    )
-
-    print()
-
-    print(
-        "[MAIN] Graph siap di-upload:"
-    )
-
-    print(
-        f"[MAIN] "
-        f"{len(graph_edges):,} edges"
-    )
-
-    # ========================================================
-    # UPLOAD DOCUMENTS
+    # UPLOAD DOCUMENTS + FTS
     # ========================================================
 
     if crawler_failed:
@@ -2645,20 +2381,18 @@ def main():
 
         print(
             "[MAIN] "
-            "Upload documents dan graph "
+            "Upload documents + FTS "
             "DIBATALKAN."
         )
 
         documents_ok = False
-
-        graph_ok = False
 
     elif documents:
 
         print()
         print(
             "[MAIN] "
-            "Memulai upload documents..."
+            "Memulai upload documents + FTS..."
         )
 
         documents_ok = (
@@ -2672,47 +2406,6 @@ def main():
         print(
             "[MAIN] "
             "Tidak ada documents "
-            "untuk di-upload."
-        )
-
-    # ========================================================
-    # UPLOAD GRAPH
-    # ========================================================
-
-    if not documents_ok:
-
-        graph_ok = False
-
-        print()
-        print(
-            "[MAIN] "
-            "UPLOAD DOCUMENTS GAGAL."
-        )
-
-        print(
-            "[MAIN] "
-            "Upload graph DIBATALKAN."
-        )
-
-    elif graph_edges:
-
-        print()
-        print(
-            "[MAIN] "
-            "Memulai upload graph..."
-        )
-
-        graph_ok = (
-            upload_graph_to_d1()
-        )
-
-    else:
-
-        graph_ok = True
-
-        print(
-            "[MAIN] "
-            "Tidak ada graph "
             "untuk di-upload."
         )
 
@@ -2736,28 +2429,33 @@ def main():
     )
 
     print(
-        f"Raw links        : "
+        f"Links discovered : "
         f"{stats['links_found']:,}"
     )
 
     print(
-        f"Final graph      : "
-        f"{len(graph_edges):,}"
+        f"Crawled          : "
+        f"{stats['crawled']:,}"
     )
 
     print(
-        f"Filtered graph   : "
-        f"{stats['graph_filtered']:,}"
+        f"Errors            : "
+        f"{stats['errors']:,}"
     )
 
     print(
-        f"Documents upload : "
+        f"Documents + FTS  : "
         f"{'OK' if documents_ok else 'FAILED'}"
     )
 
     print(
-        f"Graph upload     : "
-        f"{'OK' if graph_ok else 'FAILED'}"
+        "Page graph       : "
+        "DISABLED"
+    )
+
+    print(
+        "PageRank         : "
+        "DISABLED"
     )
 
     if (
@@ -2792,27 +2490,18 @@ def main():
     print("=" * 60)
 
     # ========================================================
-    # IMPORTANT:
-    #
-    # GitHub Actions harus dianggap FAILED kalau:
-    #
-    # - crawler fatal
-    # - documents upload gagal
-    # - graph upload gagal
-    #
-    # Jadi tidak ada lagi kasus log "SELESAI" tetapi sebenarnya
-    # database gagal menerima data.
+    # GITHUB ACTIONS FAILURE
     # ========================================================
 
     if (
         crawler_failed
         or not documents_ok
-        or not graph_ok
     ):
 
         print()
         print(
-            "[FATAL] Workflow dianggap GAGAL."
+            "[FATAL] "
+            "Workflow dianggap GAGAL."
         )
 
         sys.exit(1)
@@ -2820,7 +2509,8 @@ def main():
     print()
     print(
         "[SUCCESS] "
-        "Crawler + upload selesai dengan sukses."
+        "Crawler + Documents + FTS "
+        "selesai dengan sukses."
     )
 
 
