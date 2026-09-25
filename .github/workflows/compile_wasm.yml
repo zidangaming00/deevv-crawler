@@ -1,26 +1,30 @@
 name: Compile C++ to WASM
 
 on:
+  workflow_dispatch: # <-- Menampilkan tombol "Run workflow" di GitHub Actions
   push:
     paths:
-      - 'search_wasm.cxx' # Otomatis berjalan setiap kali file C++ di-update
+      - 'search_wasm.cxx' # Otomatis jalan saat file C++ di-update
+
+permissions:
+  contents: write # Izin untuk push hasil kompilasi kembali ke repositori
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Emscripten toolchain
-        uses: mymindstorm/setup-emsdk@v12
+        uses: mymindstorm/setup-emsdk@v14
         with:
           version: 'latest'
 
       - name: Download SQLite Amalgamation
         run: |
           wget https://www.sqlite.org/2023/sqlite-amalgamation-3420000.zip
-          unzip sqlite-amalgamation-3420000.zip
+          unzip -o sqlite-amalgamation-3420000.zip
           cp sqlite-amalgamation-3420000/sqlite3.c .
           cp sqlite-amalgamation-3420000/sqlite3.h .
 
@@ -34,6 +38,8 @@ jobs:
             -s ENVIRONMENT='worker' \
             -s FORCE_FILESYSTEM=1 \
             -s ALLOW_MEMORY_GROWTH=1 \
+            -DSQLITE_THREADSAFE=0 \
+            -DSQLITE_OMIT_LOAD_EXTENSION \
             --bind \
             -O3
 
@@ -42,5 +48,9 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add functions/api/search_engine.js functions/api/search_engine.wasm
-          git commit -m "Auto-compile search_wasm.cxx to WASM [skip ci]" || exit 0
-          git push
+          if git diff --staged --quiet; then
+            echo "Tidak ada perubahan pada file WASM."
+          else
+            git commit -m "Auto-compile search_wasm.cxx to WASM [skip ci]"
+            git push
+          fi
