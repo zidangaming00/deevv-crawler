@@ -1,13 +1,13 @@
 name: Compile C++ to WASM
 
 on:
-  workflow_dispatch: # <-- Menampilkan tombol "Run workflow" di GitHub Actions
+  workflow_dispatch:
   push:
     paths:
-      - 'search_wasm.cxx' # Otomatis jalan saat file C++ di-update
+      - 'search_wasm.cxx'
 
 permissions:
-  contents: write # Izin untuk push hasil kompilasi kembali ke repositori
+  contents: write
 
 jobs:
   build:
@@ -31,7 +31,7 @@ jobs:
       - name: Compile C++ to WASM
         run: |
           mkdir -p functions/api
-          emcc search_wasm.cxx sqlite3.c -o functions/api/search_engine.js \
+          em++ search_wasm.cxx sqlite3.c -o functions/api/search_engine.js \
             -s WASM=1 \
             -s EXPORT_ES6=1 \
             -s MODULARIZE=1 \
