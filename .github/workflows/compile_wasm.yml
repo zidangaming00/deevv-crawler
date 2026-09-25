@@ -32,18 +32,19 @@ jobs:
         run: |
           mkdir -p functions/api
 
-          # 1. Compile sqlite3.c ke object file
+          # 1. Compile sqlite3.c
           emcc -c sqlite3.c -o sqlite3.o \
             -DSQLITE_THREADSAFE=0 \
             -DSQLITE_OMIT_LOAD_EXTENSION \
             -O3
 
-          # 2. Link sqlite3.o dan search_wasm.cxx
+          # 2. Link sqlite3.o dan search_wasm.cxx dengan SINGLE_FILE=1
           em++ search_wasm.cxx sqlite3.o -o functions/api/search_engine.js \
             -s WASM=1 \
             -s EXPORT_ES6=1 \
             -s MODULARIZE=1 \
             -s ENVIRONMENT='worker' \
+            -s SINGLE_FILE=1 \
             -s DYNAMIC_EXECUTION=0 \
             -s FORCE_FILESYSTEM=1 \
             -s ALLOW_MEMORY_GROWTH=1 \
@@ -52,14 +53,13 @@ jobs:
             --bind \
             -O3
 
-      - name: Commit & Push WASM Output
+      - name: Force Commit & Push WASM Output
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add functions/api/search_engine.js functions/api/search_engine.wasm
-          if git diff --staged --quiet; then
-            echo "Tidak ada perubahan pada file WASM."
-          else
-            git commit -m "Auto-compile search_wasm.cxx to WASM [skip ci]"
-            git push
-          fi
+          
+          # Paksa stage file JS (WASM sudah menyatu di dalam file JS karena SINGLE_FILE=1)
+          git add -f functions/api/search_engine.js
+          
+          git commit --allow-empty -m "Re-compile search_wasm.cxx to WASM single file [skip ci]"
+          git push
