@@ -32,13 +32,13 @@ jobs:
         run: |
           mkdir -p functions/api
 
-          # 1. Compile sqlite3.c (C murni) pakai emcc
+          # 1. Compile sqlite3.c ke object file
           emcc -c sqlite3.c -o sqlite3.o \
             -DSQLITE_THREADSAFE=0 \
             -DSQLITE_OMIT_LOAD_EXTENSION \
             -O3
 
-          # 2. Link sqlite3.o dan search_wasm.cxx pakai em++
+          # 2. Link sqlite3.o dan search_wasm.cxx
           em++ search_wasm.cxx sqlite3.o -o functions/api/search_engine.js \
             -s WASM=1 \
             -s EXPORT_ES6=1 \
