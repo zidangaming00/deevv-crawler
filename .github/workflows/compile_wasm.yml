@@ -38,7 +38,7 @@ jobs:
             -DSQLITE_OMIT_LOAD_EXTENSION \
             -O3
 
-          # 2. Link sqlite3.o dan search_wasm.cxx pakai em++ (dengan DYNAMIC_EXECUTION=0)
+          # 2. Link sqlite3.o dan search_wasm.cxx pakai em++
           em++ search_wasm.cxx sqlite3.o -o functions/api/search_engine.js \
             -s WASM=1 \
             -s EXPORT_ES6=1 \
