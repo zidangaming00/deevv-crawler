@@ -38,13 +38,12 @@ jobs:
             -DSQLITE_OMIT_LOAD_EXTENSION \
             -O3
 
-          # 2. Link sqlite3.o dan search_wasm.cxx dengan SINGLE_FILE=1
+          # 2. Link tanpa SINGLE_FILE
           em++ search_wasm.cxx sqlite3.o -o functions/api/search_engine.js \
             -s WASM=1 \
             -s EXPORT_ES6=1 \
             -s MODULARIZE=1 \
             -s ENVIRONMENT='worker' \
-            -s SINGLE_FILE=1 \
             -s DYNAMIC_EXECUTION=0 \
             -s FORCE_FILESYSTEM=1 \
             -s ALLOW_MEMORY_GROWTH=1 \
@@ -58,8 +57,8 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Paksa stage file JS (WASM sudah menyatu di dalam file JS karena SINGLE_FILE=1)
-          git add -f functions/api/search_engine.js
+          # Stage KEDUA file: .js dan .wasm
+          git add -f functions/api/search_engine.js functions/api/search_engine.wasm
           
-          git commit --allow-empty -m "Re-compile search_wasm.cxx to WASM single file [skip ci]"
+          git commit --allow-empty -m "Re-compile search_wasm.cxx for Cloudflare Workers [skip ci]"
           git push
